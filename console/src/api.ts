@@ -1,0 +1,129 @@
+/** Typed client for the platform API, used with a console user's access token. */
+
+/** Platform API base. "/api" is proxied by Vite (dev), nginx (Docker) or a Vercel rewrite; set VITE_API_URL to call the platform directly. */
+export const API_BASE: string = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") || "/api";
+
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export type Role = "OWNER" | "ADMIN" | "DEVELOPER" | "APPROVER";
+
+export interface Membership {
+  orgId: string;
+  orgName: string;
+  domain: string;
+  verificationStatus: "PENDING" | "VERIFIED";
+  status: "ACTIVE" | "SUSPENDED";
+  role: Role;
+}
+
+export interface Me {
+  userId: string;
+  email: string;
+  platformAdmin: boolean;
+  organizations: Membership[];
+}
+
+export interface Org {
+  id: string;
+  name: string;
+  domain: string;
+  verificationStatus: string;
+  status: string;
+  verificationRecord: string | null;
+}
+
+export interface Agent {
+  id: string;
+  orgId: string;
+  name: string;
+  version: string;
+  endpointUrl: string;
+  status: "ACTIVE" | "SUSPENDED";
+  createdAt: string;
+}
+
+export interface AgentKey {
+  kid: string;
+  publicKey: string;
+  revoked: boolean;
+}
+
+export interface Card {
+  agentId: string;
+  card: string;
+  kid: string;
+  signature: string;
+  publishedAt: string;
+}
+
+export interface Policy {
+  allowedCapabilities: string[];
+  maxBudgetPerTask: string | number;
+  approvalThreshold: string | number;
+  currency: string;
+  rateLimitPerMinute: number;
+}
+
+export interface AuditEvent {
+  id: string;
+  taskId: string | null;
+  type: string;
+  actor: string;
+  requesterOrgId: string | null;
+  providerOrgId: string | null;
+  requestHash: string | null;
+  responseHash: string | null;
+  details: string | null;
+  createdAt: string;
+}
+
+export class Api {
+  constructor(private readonly token: string | null) {}
+
+  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const res = await fetch(API_BASE + path, {
+      method,
+      headers: {
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await res.text();
+    const json = text ? JSON.parse(text) : undefined;
+    if (!res.ok) throw new ApiError(res.status, json?.error ?? "http_error", json?.message ?? `Request failed (${res.status})`);
+    return json as T;
+  }
+
+  login = (email: string, password: string) => this.call<{ accessToken: string }>("POST", "/auth/login", { email, password });
+  register = (r: { email: string; password: string; orgName: string; domain: string }) =>
+    this.call<{ accessToken: string }>("POST", "/auth/register", r);
+  me = () => this.call<Me>("GET", "/me");
+
+  org = (id: string) => this.call<Org>("GET", `/orgs/${id}`);
+  allOrgs = () => this.call<Org[]>("GET", "/orgs");
+  verifyOrg = (id: string, method: "dns" | "manual") => this.call<Org>("POST", `/orgs/${id}/verify`, { method });
+  setOrgStatus = (id: string, status: "ACTIVE" | "SUSPENDED") => this.call<Org>("POST", `/orgs/${id}/status`, { status });
+
+  agents = (orgId: string) => this.call<Agent[]>("GET", `/agents?orgId=${orgId}`);
+  createAgent = (a: { orgId: string; name: string; version: string; endpointUrl: string }) => this.call<Agent>("POST", "/agents", a);
+  keys = (agentId: string) => this.call<AgentKey[]>("GET", `/agents/${agentId}/keys`);
+  addKey = (agentId: string, publicKey: string) => this.call<AgentKey>("POST", `/agents/${agentId}/keys`, { publicKey });
+  revokeKey = (agentId: string, kid: string) => this.call<AgentKey>("DELETE", `/agents/${agentId}/keys/${kid}`);
+  setAgentStatus = (agentId: string, status: "ACTIVE" | "SUSPENDED") => this.call<Agent>("POST", `/agents/${agentId}/status`, { status });
+  card = (agentId: string) => this.call<Card>("GET", `/agents/${agentId}/card`);
+
+  policy = (orgId: string) => this.call<Policy>("GET", `/orgs/${orgId}/policy`);
+  updatePolicy = (orgId: string, p: Policy) => this.call<Policy>("PUT", `/orgs/${orgId}/policy`, p);
+
+  audit = (orgId: string, taskId?: string) =>
+    this.call<AuditEvent[]>("GET", `/audit?orgId=${orgId}${taskId ? `&taskId=${encodeURIComponent(taskId)}` : ""}`);
+}

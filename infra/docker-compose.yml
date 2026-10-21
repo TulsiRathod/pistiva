@@ -1,0 +1,68 @@
+# Local walking skeleton: control plane + Postgres + console, and the demo agents.
+#   docker compose -f infra/docker-compose.yml up --build             # platform, db, console
+#   docker compose -f infra/docker-compose.yml run --rm demo          # end-to-end demo
+name: pistiva
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pistiva
+      POSTGRES_USER: pistiva
+      POSTGRES_PASSWORD: pistiva
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pistiva -d pistiva"]
+      interval: 2s
+      retries: 30
+
+  platform:
+    build: ../platform
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/pistiva
+      DB_USER: pistiva
+      DB_PASSWORD: pistiva
+      PISTIVA_SIGNING_KEY_FILE: /app/data/platform-signing-key
+      PISTIVA_ADMIN_EMAIL: ${PISTIVA_ADMIN_EMAIL:-admin@pistiva.local}
+      PISTIVA_ADMIN_PASSWORD: ${PISTIVA_ADMIN_PASSWORD:-change-me-admin}
+      PISTIVA_CORS_ORIGINS: http://localhost:5173
+    ports:
+      - "8080:8080"
+    volumes:
+      - platform-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080'"]
+      interval: 3s
+      retries: 40
+
+  console:
+    build: ../console
+    depends_on:
+      - platform
+    ports:
+      - "5173:80"
+
+  # Two supplier gateways and the buyer flow, in one container. Each supplier would normally run
+  # on its own organization's infrastructure; here they share a host for convenience.
+  demo:
+    build: ../sdk
+    profiles: ["demo"]
+    depends_on:
+      platform:
+        condition: service_healthy
+    environment:
+      PLATFORM_URL: http://platform:8080
+      SUPPLIER_HOST: demo
+      PISTIVA_ADMIN_EMAIL: ${PISTIVA_ADMIN_EMAIL:-admin@pistiva.local}
+      PISTIVA_ADMIN_PASSWORD: ${PISTIVA_ADMIN_PASSWORD:-change-me-admin}
+    hostname: demo
+
+volumes:
+  pgdata:
+  platform-data:

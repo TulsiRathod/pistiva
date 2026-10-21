@@ -1,0 +1,16 @@
+{
+  "name": "@pistiva/example-supplier-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/supplier.ts"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@pistiva/agent-sdk": "*",
+    "@pistiva/gateway": "*"
+  }
+}

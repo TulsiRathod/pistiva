@@ -1,0 +1,347 @@
+package com.pistiva.platform;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.pistiva.platform.common.Ed25519;
+import com.pistiva.platform.common.Jcs;
+import com.pistiva.platform.common.Jws;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import java.security.KeyPair;
+import java.time.Instant;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * End-to-end control-plane checks against a real Postgres, mapped to the MVP acceptance criteria.
+ * Skipped automatically when Docker is not available.
+ */
+@SpringBootTest(properties = "pistiva.signing-key-file=target/test-signing-key")
+@AutoConfigureMockMvc
+@Testcontainers(disabledWithoutDocker = true)
+class PlatformFlowTest {
+
+    @Container
+    @ServiceConnection
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    private static final AtomicInteger SEQ = new AtomicInteger();
+
+    @Autowired
+    MockMvc mvc;
+    @Autowired
+    ObjectMapper mapper;
+    @Autowired
+    PlatformProperties props;
+
+    String adminToken;
+
+    record TestAgent(UUID orgId, String userToken, UUID agentId, String kid, KeyPair keys) {
+    }
+
+    @BeforeEach
+    void login() throws Exception {
+        adminToken = body(mvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("email", props.adminEmail()).put("password", props.adminPassword())))))
+                .get("accessToken").asText();
+    }
+
+    @Test
+    void discoveryReturnsOnlyVerifiedOrganizations() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent unverified = newAgent(false, "quote.request");
+
+        JsonNode found = body(mvc.perform(get("/discovery").param("capability", "quote.request")
+                .header("Authorization", "Bearer " + supplier.userToken())).andExpect(status().isOk()));
+        assertThat(found.findValuesAsText("agentId")).contains(supplier.agentId().toString())
+                .doesNotContain(unverified.agentId().toString());
+    }
+
+    @Test
+    void cardWithBadSignatureIsRejected() throws Exception {
+        TestAgent agent = newAgent(true, null);
+        ObjectNode card = card(agent, "quote.request");
+        String wrongSig = Ed25519.b64url(Ed25519.sign(Ed25519.generate().getPrivate(), Jcs.canonicalize(card)));
+        mvc.perform(put("/agents/" + agent.agentId() + "/card").header("Authorization", "Bearer " + agent.userToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(mapper.createObjectNode().<ObjectNode>set("card", card).put("kid", agent.kid()).put("signature", wrongSig))))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void outOfScopeAndOverBudgetRequestsAreDeniedAndAudited() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+
+        requestGrant(buyer, supplier, "inventory.export", "100.00").andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("policy_denied"));
+        requestGrant(buyer, supplier, "quote.request", "999999.00").andExpect(status().isForbidden());
+
+        JsonNode events = body(mvc.perform(get("/audit").param("orgId", buyer.orgId().toString())
+                .header("Authorization", "Bearer " + buyer.userToken())));
+        assertThat(events.findValuesAsText("type").stream().filter("GRANT_DENIED"::equals)).hasSize(2);
+    }
+
+    @Test
+    void grantAboveApprovalThresholdRequiresApproval() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+
+        assertThat(body(requestGrant(buyer, supplier, "quote.request", "500.00").andExpect(status().isOk()))
+                .get("approvalRequired").asBoolean()).isFalse();
+        assertThat(body(requestGrant(buyer, supplier, "quote.request", "20000.00").andExpect(status().isOk()))
+                .get("approvalRequired").asBoolean()).isTrue();
+    }
+
+    @Test
+    void suspendedAgentAndRevokedKeyCannotStartTasks() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        requestGrant(buyer, supplier, "quote.request", "10.00").andExpect(status().isOk());
+
+        mvc.perform(post("/agents/" + buyer.agentId() + "/status").header("Authorization", "Bearer " + buyer.userToken())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"SUSPENDED\"}")).andExpect(status().isOk());
+        requestGrant(buyer, supplier, "quote.request", "10.00").andExpect(status().isUnauthorized());
+
+        mvc.perform(post("/agents/" + buyer.agentId() + "/status").header("Authorization", "Bearer " + buyer.userToken())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"ACTIVE\"}")).andExpect(status().isOk());
+        mvc.perform(delete("/agents/" + buyer.agentId() + "/keys/" + buyer.kid())
+                .header("Authorization", "Bearer " + buyer.userToken())).andExpect(status().isOk());
+        requestGrant(buyer, supplier, "quote.request", "10.00").andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void replayedAgentAssertionIsRejected() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        String assertion = assertion(buyer);
+        grantWith(assertion, supplier, "quote.request", "10.00").andExpect(status().isOk());
+        grantWith(assertion, supplier, "quote.request", "10.00").andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void receiptNeedsBothValidSignatures() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        JsonNode grant = body(requestGrant(buyer, supplier, "quote.request", "10.00"));
+
+        ObjectNode receipt = mapper.createObjectNode()
+                .put("taskId", grant.get("taskId").asText())
+                .put("grantId", grant.get("jti").asText())
+                .put("requesterAgentId", buyer.agentId().toString())
+                .put("providerAgentId", supplier.agentId().toString())
+                .put("capability", "quote.request")
+                .put("requestHash", "sha256-req")
+                .put("responseHash", "sha256-res")
+                .put("status", "completed")
+                .put("issuedAt", Instant.now().getEpochSecond());
+        byte[] canonical = Jcs.canonicalize(receipt);
+        String providerSig = Ed25519.b64url(Ed25519.sign(supplier.keys().getPrivate(), canonical));
+        String requesterSig = Ed25519.b64url(Ed25519.sign(buyer.keys().getPrivate(), canonical));
+
+        ObjectNode tampered = receipt.deepCopy().put("responseHash", "sha256-other");
+        submitReceipt(buyer, tampered, supplier.kid(), providerSig, buyer.kid(), requesterSig).andExpect(status().isBadRequest());
+        submitReceipt(buyer, receipt, supplier.kid(), providerSig, buyer.kid(), requesterSig).andExpect(status().isOk())
+                .andExpect(jsonPath("$.alreadyRecorded").value(false));
+        submitReceipt(supplier, receipt, supplier.kid(), providerSig, buyer.kid(), requesterSig).andExpect(status().isOk())
+                .andExpect(jsonPath("$.alreadyRecorded").value(true));
+    }
+
+    @Test
+    void procurementPackIsRegisteredWithSelfContainedSchemas() throws Exception {
+        JsonNode types = body(mvc.perform(get("/task-types")).andExpect(status().isOk()));
+        assertThat(types.findValuesAsText("name")).contains("quote.request", "order.draft", "order.confirm", "delivery.update");
+
+        JsonNode quote = body(mvc.perform(get("/task-types/quote.request/versions/1")).andExpect(status().isOk()));
+        assertThat(quote.get("direction").asText()).isEqualTo("requester_to_provider");
+        JsonNode request = quote.get("messages").get("request");
+        assertThat(request.get("$schema").asText()).contains("2020-12");
+        assertThat(request.get("$defs").has("sku")).isTrue();
+        assertThat(quote.get("messages").has("clarification")).isTrue();
+    }
+
+    @Test
+    void publishedTaskTypeVersionsAreImmutable() throws Exception {
+        String pack = """
+                {"pack":"procurement","taskTypes":[{"name":"quote.request","version":1,"description":"changed",
+                 "direction":"requester_to_provider","cardinality":"one_to_one","handler":"quote.request",
+                 "messages":{"request":{"type":"object"},"result":{"type":"object"}}}]}""";
+        mvc.perform(post("/task-types/packs").header("Authorization", "Bearer " + adminToken)
+                .contentType(MediaType.APPLICATION_JSON).content(pack)).andExpect(status().isConflict());
+    }
+
+    @Test
+    void cardAdvertisingUnregisteredTaskTypeIsRejected() throws Exception {
+        TestAgent agent = newAgent(true, null);
+        ObjectNode card = card(agent, "quote.request");
+        ((ObjectNode) card.get("capabilities").get(0)).put("version", 99);
+        String sig = Ed25519.b64url(Ed25519.sign(agent.keys().getPrivate(), Jcs.canonicalize(card)));
+        mvc.perform(put("/agents/" + agent.agentId() + "/card").header("Authorization", "Bearer " + agent.userToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(mapper.createObjectNode().<ObjectNode>set("card", card).put("kid", agent.kid()).put("signature", sig))))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void grantPinsTaskTypeVersionAndTaskCanBeContinuedWithoutRaisingBudget() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        JsonNode first = body(requestGrant(buyer, supplier, "quote.request", "100.00").andExpect(status().isOk()));
+        String[] parts = first.get("grant").asText().split("\\.");
+        JsonNode claims = mapper.readTree(Ed25519.b64urlDecode(parts[1]));
+        assertThat(claims.get("ttv").asInt()).isEqualTo(1);
+
+        String taskId = first.get("taskId").asText();
+        JsonNode next = body(continueGrant(buyer, supplier, taskId, "100.00").andExpect(status().isOk()));
+        assertThat(next.get("taskId").asText()).isEqualTo(taskId);
+        assertThat(next.get("jti").asText()).isNotEqualTo(first.get("jti").asText());
+        continueGrant(buyer, supplier, taskId, "500.00").andExpect(status().isForbidden());
+        continueGrant(supplier, buyer, taskId, "100.00").andExpect(status().isForbidden());
+    }
+
+    @Test
+    void receiptsAreRecordedPerRoundUntilTerminal() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        JsonNode grant = body(requestGrant(buyer, supplier, "quote.request", "10.00"));
+
+        submitRound(buyer, supplier, grant, 1, "input-required").andExpect(status().isOk());
+        submitRound(buyer, supplier, grant, 2, "completed").andExpect(status().isOk());
+        submitRound(buyer, supplier, grant, 3, "completed").andExpect(status().isConflict());
+        continueGrant(buyer, supplier, grant.get("taskId").asText(), "10.00").andExpect(status().isForbidden());
+    }
+
+    // --- helpers ---
+
+    private ResultActions continueGrant(TestAgent requester, TestAgent provider, String taskId, String budget) throws Exception {
+        return mvc.perform(post("/grants").header("Authorization", "Bearer " + assertion(requester))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("providerAgentId", provider.agentId().toString())
+                        .put("capability", "quote.request").put("budget", budget).put("currency", "INR")
+                        .put("continueTaskId", taskId))));
+    }
+
+    private ResultActions submitRound(TestAgent buyer, TestAgent supplier, JsonNode grant, int round, String state) throws Exception {
+        ObjectNode receipt = mapper.createObjectNode()
+                .put("taskId", grant.get("taskId").asText())
+                .put("grantId", grant.get("jti").asText())
+                .put("round", round)
+                .put("state", state)
+                .put("requesterAgentId", buyer.agentId().toString())
+                .put("providerAgentId", supplier.agentId().toString())
+                .put("capability", "quote.request")
+                .put("taskTypeVersion", 1)
+                .put("requestHash", "sha256-req" + round)
+                .put("responseHash", "sha256-res" + round)
+                .put("issuedAt", Instant.now().getEpochSecond());
+        byte[] canonical = Jcs.canonicalize(receipt);
+        return submitReceipt(buyer, receipt, supplier.kid(), Ed25519.b64url(Ed25519.sign(supplier.keys().getPrivate(), canonical)),
+                buyer.kid(), Ed25519.b64url(Ed25519.sign(buyer.keys().getPrivate(), canonical)));
+    }
+
+    private TestAgent newAgent(boolean verified, String capability) throws Exception {
+        int n = SEQ.incrementAndGet();
+        String suffix = n + "-" + UUID.randomUUID().toString().substring(0, 8);
+        String token = body(mvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("email", "owner" + suffix + "@example.com")
+                        .put("password", "correct-horse-battery").put("orgName", "Org " + suffix)
+                        .put("domain", "org" + suffix + ".example.com"))))
+                .andExpect(status().isOk())).get("accessToken").asText();
+        UUID orgId = UUID.fromString(body(mvc.perform(get("/me").header("Authorization", "Bearer " + token)))
+                .get("organizations").get(0).get("orgId").asText());
+        if (verified) {
+            mvc.perform(post("/orgs/" + orgId + "/verify").header("Authorization", "Bearer " + adminToken)
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"method\":\"manual\"}")).andExpect(status().isOk());
+        }
+        UUID agentId = UUID.fromString(body(mvc.perform(post("/agents").header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("orgId", orgId.toString()).put("name", "agent-" + n)
+                        .put("version", "1.0.0").put("endpointUrl", "http://localhost:9" + n))))
+                .andExpect(status().isOk())).get("id").asText());
+        KeyPair keys = Ed25519.generate();
+        String kid = body(mvc.perform(post("/agents/" + agentId + "/keys").header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("publicKey", Ed25519.rawPublicKey(keys.getPublic())))))
+                .andExpect(status().isOk())).get("kid").asText();
+        TestAgent agent = new TestAgent(orgId, token, agentId, kid, keys);
+        if (capability != null) {
+            ObjectNode card = card(agent, capability);
+            String sig = Ed25519.b64url(Ed25519.sign(keys.getPrivate(), Jcs.canonicalize(card)));
+            mvc.perform(put("/agents/" + agentId + "/card").header("Authorization", "Bearer " + token)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(json(mapper.createObjectNode().<ObjectNode>set("card", card).put("kid", kid).put("signature", sig))))
+                    .andExpect(status().isOk());
+        }
+        return agent;
+    }
+
+    private ObjectNode card(TestAgent agent, String capability) {
+        ObjectNode card = mapper.createObjectNode()
+                .put("agentId", agent.agentId().toString())
+                .put("orgId", agent.orgId().toString())
+                .put("kid", agent.kid())
+                .put("name", "Supplier agent")
+                .put("version", "1.0.0")
+                .put("endpoint", "http://localhost:9100")
+                .put("issuedAt", Instant.now().getEpochSecond());
+        ObjectNode cap = card.putArray("capabilities").addObject().put("name", capability).put("version", 1);
+        cap.putObject("price").put("model", "per_task").put("amount", "10.00").put("currency", "INR");
+        cap.putArray("responseFields").add("available").add("unitPrice").add("validUntil").add("terms");
+        return card;
+    }
+
+    private String assertion(TestAgent agent) {
+        long now = Instant.now().getEpochSecond();
+        ObjectNode claims = mapper.createObjectNode().put("iss", agent.agentId().toString()).put("aud", props.issuer())
+                .put("iat", now).put("exp", now + 60).put("jti", UUID.randomUUID().toString());
+        return Jws.sign("pistiva-agent+jwt", agent.kid(), claims, agent.keys().getPrivate());
+    }
+
+    private ResultActions requestGrant(TestAgent requester, TestAgent provider, String capability, String budget) throws Exception {
+        return grantWith(assertion(requester), provider, capability, budget);
+    }
+
+    private ResultActions grantWith(String assertion, TestAgent provider, String capability, String budget) throws Exception {
+        return mvc.perform(post("/grants").header("Authorization", "Bearer " + assertion)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("providerAgentId", provider.agentId().toString())
+                        .put("capability", capability).put("budget", budget).put("currency", "INR"))));
+    }
+
+    private ResultActions submitReceipt(TestAgent submitter, ObjectNode receipt, String providerKid, String providerSig,
+                                        String requesterKid, String requesterSig) throws Exception {
+        return mvc.perform(post("/audit/receipts").header("Authorization", "Bearer " + assertion(submitter))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().<ObjectNode>set("receipt", receipt)
+                        .put("providerKid", providerKid).put("providerSignature", providerSig)
+                        .put("requesterKid", requesterKid).put("requesterSignature", requesterSig))));
+    }
+
+    private JsonNode body(ResultActions result) throws Exception {
+        return mapper.readTree(result.andReturn().getResponse().getContentAsString());
+    }
+
+    private String json(JsonNode node) throws Exception {
+        return mapper.writeValueAsString(node);
+    }
+}

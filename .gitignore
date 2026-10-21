@@ -1,0 +1,10 @@
+node_modules/
+dist/
+target/
+.demo/
+*.key.json
+platform/data/
+*.log
+.idea/
+.vscode/
+*.jsonl

@@ -1,0 +1,14 @@
+{
+  "name": "@pistiva/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider-side gateway: verifies signed task requests and grants, enforces local policy, signs responses and receipts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@pistiva/agent-sdk": "*",
+    "fastify": "^5.6.0"
+  }
+}

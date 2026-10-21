@@ -1,0 +1,182 @@
+{
+  "pack": "procurement",
+  "version": 1,
+  "description": "Quote, order and delivery exchanges between a buying organization and its suppliers.",
+  "vocabulary": {
+    "sku": "Supplier stock-keeping unit, case-sensitive, 1-64 chars",
+    "uom": "Unit of measure: EA (each), BOX, PACK, KG, M, L",
+    "currency": "ISO 4217 code",
+    "amount": "Decimal string with at most two decimals, e.g. \"125.00\"; never a JSON number",
+    "incoterm": "Incoterms 2020 code: EXW, FCA, CPT, CIP, DAP, DPU, DDP, FAS, FOB, CFR, CIF",
+    "paymentTerms": "NET15, NET30, NET45, NET60, ADVANCE, COD",
+    "date": "ISO 8601 calendar date, YYYY-MM-DD"
+  },
+  "taskTypes": [
+    {
+      "name": "quote.request",
+      "version": 1,
+      "description": "Ask a supplier for availability, price and terms for one SKU and quantity. The supplier may ask one or more clarifying questions before quoting.",
+      "direction": "requester_to_provider",
+      "cardinality": "one_to_one",
+      "handler": "quote.request",
+      "extension": false,
+      "messages": {
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sku", "qty"],
+          "properties": {
+            "sku": { "$ref": "#/$defs/sku" },
+            "qty": { "type": "integer", "minimum": 1, "maximum": 10000000 },
+            "uom": { "$ref": "#/$defs/uom" },
+            "deliverBy": { "$ref": "#/$defs/date" },
+            "incoterm": { "$ref": "#/$defs/incoterm" },
+            "specs": { "type": "string", "maxLength": 2000 }
+          }
+        },
+        "clarification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["question"],
+          "properties": {
+            "question": { "type": "string", "maxLength": 1000 },
+            "field": { "type": "string", "maxLength": 64 },
+            "options": { "type": "array", "maxItems": 10, "items": { "type": "string", "maxLength": 100 } }
+          }
+        },
+        "answer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["answer"],
+          "properties": {
+            "answer": { "type": "string", "maxLength": 1000 }
+          }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sku", "available"],
+          "properties": {
+            "sku": { "$ref": "#/$defs/sku" },
+            "available": { "type": "boolean" },
+            "qty": { "type": "integer", "minimum": 0 },
+            "uom": { "$ref": "#/$defs/uom" },
+            "unitPrice": { "$ref": "#/$defs/amount" },
+            "currency": { "$ref": "#/$defs/currency" },
+            "validUntil": { "$ref": "#/$defs/date" },
+            "leadTimeDays": { "type": "integer", "minimum": 0, "maximum": 3650 },
+            "incoterm": { "$ref": "#/$defs/incoterm" },
+            "paymentTerms": { "$ref": "#/$defs/paymentTerms" },
+            "terms": { "type": "string", "maxLength": 1000 }
+          }
+        }
+      }
+    },
+    {
+      "name": "order.draft",
+      "version": 1,
+      "description": "Turn an accepted quote into a draft order the supplier holds. A draft is not a commitment.",
+      "direction": "requester_to_provider",
+      "cardinality": "one_to_one",
+      "handler": "order.draft",
+      "extension": false,
+      "messages": {
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["quoteTaskId", "sku", "qty", "unitPrice", "currency"],
+          "properties": {
+            "quoteTaskId": { "$ref": "#/$defs/uuid" },
+            "sku": { "$ref": "#/$defs/sku" },
+            "qty": { "type": "integer", "minimum": 1 },
+            "unitPrice": { "$ref": "#/$defs/amount" },
+            "currency": { "$ref": "#/$defs/currency" },
+            "deliverBy": { "$ref": "#/$defs/date" }
+          }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["orderRef", "status", "total", "currency"],
+          "properties": {
+            "orderRef": { "type": "string", "maxLength": 64 },
+            "status": { "const": "draft" },
+            "total": { "$ref": "#/$defs/amount" },
+            "currency": { "$ref": "#/$defs/currency" },
+            "holdUntil": { "$ref": "#/$defs/date" }
+          }
+        }
+      }
+    },
+    {
+      "name": "order.confirm",
+      "version": 1,
+      "description": "Commit a draft order. Requires a human approval on the buying side when the grant demands it.",
+      "direction": "requester_to_provider",
+      "cardinality": "one_to_one",
+      "handler": "order.confirm",
+      "extension": false,
+      "messages": {
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["orderRef"],
+          "properties": {
+            "orderRef": { "type": "string", "maxLength": 64 },
+            "approvalId": { "$ref": "#/$defs/uuid" }
+          }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["orderRef", "status"],
+          "properties": {
+            "orderRef": { "type": "string", "maxLength": 64 },
+            "status": { "enum": ["confirmed", "rejected"] },
+            "expectedShipDate": { "$ref": "#/$defs/date" }
+          }
+        }
+      }
+    },
+    {
+      "name": "delivery.update",
+      "version": 1,
+      "description": "Supplier informs the buyer about shipment progress. The supplier is the requester of this task type.",
+      "direction": "provider_to_requester",
+      "cardinality": "one_to_one",
+      "handler": "delivery.update",
+      "extension": true,
+      "messages": {
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["orderRef", "status"],
+          "properties": {
+            "orderRef": { "type": "string", "maxLength": 64 },
+            "status": { "enum": ["packed", "shipped", "delayed", "delivered"] },
+            "eta": { "$ref": "#/$defs/date" },
+            "note": { "type": "string", "maxLength": 500 }
+          }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["acknowledged"],
+          "properties": {
+            "acknowledged": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+    "sku": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9._-]+$" },
+    "uom": { "enum": ["EA", "BOX", "PACK", "KG", "M", "L"] },
+    "amount": { "type": "string", "pattern": "^\\d{1,15}(\\.\\d{1,2})?$" },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "incoterm": { "enum": ["EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FAS", "FOB", "CFR", "CIF"] },
+    "paymentTerms": { "enum": ["NET15", "NET30", "NET45", "NET60", "ADVANCE", "COD"] }
+  }
+}

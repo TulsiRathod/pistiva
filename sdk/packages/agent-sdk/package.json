@@ -1,0 +1,13 @@
+{
+  "name": "@pistiva/agent-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Keys, canonical signing, envelopes, grants, receipts and the platform client for Pistiva agents",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0"
+  }
+}
