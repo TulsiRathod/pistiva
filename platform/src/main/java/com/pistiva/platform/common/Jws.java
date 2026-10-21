@@ -22,9 +22,14 @@ public final class Jws {
     }
 
     public static String sign(String typ, String kid, ObjectNode payload, PrivateKey key) {
+        return sign(typ, kid, payload, data -> Ed25519.sign(key, data));
+    }
+
+    /** Signs with an external signer, e.g. a KMS that holds the private key. */
+    public static String sign(String typ, String kid, ObjectNode payload, Function<byte[], byte[]> signer) {
         ObjectNode header = MAPPER.createObjectNode().put("alg", "EdDSA").put("typ", typ).put("kid", kid);
         String signingInput = encode(header) + "." + encode(payload);
-        byte[] sig = Ed25519.sign(key, signingInput.getBytes(StandardCharsets.US_ASCII));
+        byte[] sig = signer.apply(signingInput.getBytes(StandardCharsets.US_ASCII));
         return signingInput + "." + Ed25519.b64url(sig);
     }
 

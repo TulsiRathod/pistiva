@@ -41,6 +41,14 @@ pistiva:
   issuer: pistiva-platform
   signing-key-seed: ${PISTIVA_SIGNING_KEY_SEED:}
   signing-key-file: ${PISTIVA_SIGNING_KEY_FILE:./data/platform-signing-key}
+  # Where the signing key lives: local (the seed or file above) or vault-transit (Vault / OpenBao, HSM-backed if configured).
+  signing:
+    provider: ${PISTIVA_SIGNING_PROVIDER:local}
+    vault:
+      address: ${VAULT_ADDR:}
+      token: ${VAULT_TOKEN:}
+      mount: ${PISTIVA_VAULT_TRANSIT_MOUNT:transit}
+      key: ${PISTIVA_VAULT_TRANSIT_KEY:pistiva-platform}
   grant-ttl: 5m
   user-token-ttl: 8h
   agent-assertion-max-ttl: 2m

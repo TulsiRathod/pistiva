@@ -146,6 +146,17 @@ Grafana at http://localhost:3000 (admin / admin) has the **Pistiva network** das
 - **Platform:** `GET /actuator/prometheus` needs `Authorization: Bearer $PISTIVA_METRICS_TOKEN` and is closed without it. Traces are exported when `MANAGEMENT_OTLP_TRACING_ENDPOINT` is set.
 - **Partner Kit:** `GET /metrics` needs `Authorization: Bearer $KIT_METRICS_TOKEN`. Traces are exported when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 
+## Platform signing key
+
+Grants and console tokens are signed with the platform's Ed25519 key. By default the key comes from `PISTIVA_SIGNING_KEY_SEED`, or from a generated development file. For production, keep it in Vault or OpenBao Transit, optionally HSM-backed, so the private key never leaves the key store:
+
+```bash
+vault secrets enable transit && vault write -f transit/keys/pistiva-platform type=ed25519
+PISTIVA_SIGNING_PROVIDER=vault-transit VAULT_ADDR=https://vault:8200 VAULT_TOKEN=… java -jar platform.jar
+```
+
+Rotating the key with `vault write -f transit/keys/pistiva-platform/rotate` switches new signatures to the new version. Every version stays in `/.well-known/jwks.json`, so outstanding grants keep verifying.
+
 ## Task-type contracts
 
 `GET /task-types` lists the contracts. `GET /task-types/{name}/versions/{v}` returns one, with self-contained JSON Schemas per message kind. A platform admin can publish a new pack with `POST /task-types/packs`; published versions are immutable. See [ADR 005](docs/adr/005-a2a-with-pistiva-trust-and-task-contracts.md).
@@ -154,6 +165,5 @@ Grafana at http://localhost:3000 (admin / admin) has the **Pistiva network** das
 
 - WebRTC direct connections with TURN relay fallback
 - Usage metering and payouts
-- KMS/HSM key custody
 
 See the plan's "Next milestone".

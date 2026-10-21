@@ -69,7 +69,7 @@ public class TokenService {
 
     public UserPrincipal verifyUserToken(String token) {
         Jws.Parsed parsed = Jws.verify(token, USER_TYP,
-                header -> platformKeys.kid().equals(header.path("kid").asText()) ? platformKeys.publicKey() : null);
+                header -> platformKeys.publicKey(header.path("kid").asText(null)));
         JsonNode claims = parsed.payload();
         if (!props.issuer().equals(claims.path("iss").asText())) {
             throw new ApiException.Unauthorized("Wrong issuer");
