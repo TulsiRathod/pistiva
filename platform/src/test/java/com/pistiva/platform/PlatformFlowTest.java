@@ -231,6 +231,39 @@ class PlatformFlowTest {
         continueGrant(buyer, supplier, grant.get("taskId").asText(), "10.00").andExpect(status().isForbidden());
     }
 
+    @Test
+    void adminDashboardIsAdminOnlyAndCountsNetworkActivity() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        requestGrant(buyer, supplier, "quote.request", "10.00").andExpect(status().isOk());
+        requestGrant(buyer, supplier, "inventory.export", "10.00").andExpect(status().isForbidden());
+
+        mvc.perform(get("/admin/overview").header("Authorization", "Bearer " + buyer.userToken())).andExpect(status().isForbidden());
+
+        JsonNode overview = body(mvc.perform(get("/admin/overview").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk()));
+        assertThat(overview.get("organizations").get("verified").asLong()).isGreaterThanOrEqualTo(2);
+        assertThat(overview.get("activity")).hasSize(14);
+        JsonNode today = overview.get("activity").get(13);
+        assertThat(today.get("grantsIssued").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(today.get("grantsDenied").asLong()).isGreaterThanOrEqualTo(1);
+
+        JsonNode orgs = body(mvc.perform(get("/admin/organizations").header("Authorization", "Bearer " + adminToken)));
+        JsonNode supplierRow = null;
+        for (JsonNode o : orgs) {
+            if (o.get("id").asText().equals(supplier.orgId().toString())) {
+                supplierRow = o;
+            }
+        }
+        assertThat(supplierRow).isNotNull();
+        assertThat(supplierRow.get("agents").asLong()).isEqualTo(1);
+        assertThat(supplierRow.get("lastActivity").isNull()).isFalse();
+
+        JsonNode events = body(mvc.perform(get("/admin/events").param("limit", "5").header("Authorization", "Bearer " + adminToken)));
+        assertThat(events).hasSizeLessThanOrEqualTo(5);
+        assertThat(events.get(0).get("type").asText()).isNotBlank();
+    }
+
     // --- helpers ---
 
     private ResultActions continueGrant(TestAgent requester, TestAgent provider, String taskId, String budget) throws Exception {

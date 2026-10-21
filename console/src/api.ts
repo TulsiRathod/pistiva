@@ -85,6 +85,47 @@ export interface AuditEvent {
   createdAt: string;
 }
 
+export interface DayActivity {
+  date: string;
+  grantsIssued: number;
+  grantsDenied: number;
+  receipts: number;
+}
+
+export interface AdminOverview {
+  organizations: { total: number; verified: number; pending: number; suspended: number };
+  agents: { total: number; active: number; suspended: number; liveKeys: number; revokedKeys: number };
+  taskTypes: number;
+  grantsIssued: number;
+  grantsDenied: number;
+  receipts: number;
+  activity: DayActivity[];
+}
+
+export interface AdminEvent {
+  id: string;
+  type: string;
+  actor: string;
+  taskId: string | null;
+  requesterOrg: string | null;
+  providerOrg: string | null;
+  details: string | null;
+  createdAt: string;
+}
+
+export interface AdminOrg {
+  id: string;
+  name: string;
+  domain: string;
+  verificationStatus: "PENDING" | "VERIFIED";
+  status: "ACTIVE" | "SUSPENDED";
+  createdAt: string;
+  members: number;
+  agents: number;
+  activeAgents: number;
+  lastActivity: string | null;
+}
+
 export class Api {
   constructor(private readonly token: string | null) {}
 
@@ -123,6 +164,10 @@ export class Api {
 
   policy = (orgId: string) => this.call<Policy>("GET", `/orgs/${orgId}/policy`);
   updatePolicy = (orgId: string, p: Policy) => this.call<Policy>("PUT", `/orgs/${orgId}/policy`, p);
+
+  adminOverview = (days = 14) => this.call<AdminOverview>("GET", `/admin/overview?days=${days}`);
+  adminEvents = (limit = 25) => this.call<AdminEvent[]>("GET", `/admin/events?limit=${limit}`);
+  adminOrgs = () => this.call<AdminOrg[]>("GET", "/admin/organizations");
 
   audit = (orgId: string, taskId?: string) =>
     this.call<AuditEvent[]>("GET", `/audit?orgId=${orgId}${taskId ? `&taskId=${encodeURIComponent(taskId)}` : ""}`);

@@ -57,7 +57,7 @@ const TITLES: Record<Tab, [string, string]> = {
   agents: ["Agents", "Register agents, manage their keys and use the kill switch"],
   policy: ["Policy", "Rules the platform checks before every task grant"],
   audit: ["Audit log", "Grants, denials and signed receipts — metadata only"],
-  admin: ["Platform admin", "Verify organizations and handle abuse"],
+  admin: ["Admin dashboard", "Network health, verification queue and organization management"],
 };
 
 export function App() {
