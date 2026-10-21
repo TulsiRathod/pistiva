@@ -15,7 +15,7 @@ import java.util.UUID;
 @Table(name = "task_grants")
 public class TaskGrant {
 
-    public enum Status { ISSUED, COMPLETED }
+    public enum Status { ISSUED, COMPLETED, EXPIRED }
 
     @Id
     private UUID jti;

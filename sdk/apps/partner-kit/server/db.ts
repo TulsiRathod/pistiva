@@ -126,6 +126,42 @@ const MIGRATIONS: { version: number; sql: string }[] = [
       ALTER TABLE kit_questions ADD COLUMN suggestion JSONB;
     `,
   },
+  {
+    version: 4,
+    sql: `
+      CREATE TABLE kit_jobs (
+        id           BIGSERIAL PRIMARY KEY,
+        kind         TEXT NOT NULL,
+        payload      JSONB NOT NULL DEFAULT '{}',
+        unique_key   TEXT,
+        status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed')),
+        attempts     INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 5,
+        run_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+        locked_at    TIMESTAMPTZ,
+        last_error   TEXT,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        finished_at  TIMESTAMPTZ
+      );
+      CREATE INDEX kit_jobs_due ON kit_jobs (status, run_at);
+      CREATE UNIQUE INDEX kit_jobs_unique_pending ON kit_jobs (unique_key) WHERE status IN ('pending', 'running');
+
+      -- What an outbound task needs to resume after a restart: the request and the provider it went to.
+      ALTER TABLE kit_tasks ADD COLUMN request JSONB;
+      ALTER TABLE kit_tasks ADD COLUMN provider JSONB;
+    `,
+  },
+  {
+    version: 5,
+    sql: `
+      -- Seen request nonces, shared by every replica of this node so a replay is caught on any of them.
+      CREATE TABLE gateway_nonces (
+        nonce      TEXT PRIMARY KEY,
+        expires_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX gateway_nonces_expiry ON gateway_nonces (expires_at);
+    `,
+  },
 ];
 
 export type Db = pg.Pool;

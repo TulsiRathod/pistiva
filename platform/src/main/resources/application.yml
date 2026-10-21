@@ -12,6 +12,11 @@ spring:
       ddl-auto: validate
   flyway:
     enabled: true
+  # Redis is opt-in (pistiva.redis.url); without it nothing tries to connect.
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
 
 server:
   port: ${PORT:8080}
@@ -36,3 +41,5 @@ pistiva:
   admin-email: ${PISTIVA_ADMIN_EMAIL:admin@pistiva.local}
   admin-password: ${PISTIVA_ADMIN_PASSWORD:change-me-admin}
   cors-origins: ${PISTIVA_CORS_ORIGINS:http://localhost:5173}
+  redis:
+    url: ${PISTIVA_REDIS_URL:}

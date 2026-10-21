@@ -5,16 +5,16 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Remembers one-time identifiers until they expire. Single-node only; a multi-node deployment
- * needs a shared store (for example Redis SET NX with TTL).
+ * In-memory replay store: the default for a single platform instance. Several instances share
+ * {@link RedisReplayStore} instead (pistiva.redis.url).
  */
-public class ReplayCache {
+public class ReplayCache implements ReplayStore {
 
     private static final int PURGE_THRESHOLD = 10_000;
 
     private final Map<String, Long> seen = new ConcurrentHashMap<>();
 
-    /** Returns true the first time an id is seen, false on replay. */
+    @Override
     public boolean firstUse(String id, long expiresAtEpochSecond) {
         long now = Instant.now().getEpochSecond();
         if (seen.size() > PURGE_THRESHOLD) {

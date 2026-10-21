@@ -100,6 +100,13 @@ A purchase above your organization's approval threshold can't be committed until
 3. An owner, admin or approver decides it under **Approvals** in the console.
 4. The node confirms with the supplier automatically. Each approval backs exactly one commitment.
 
+## Reliability and webhooks
+
+See [ADR 009](docs/adr/009-background-work-and-reliability.md).
+- **Partner Kit:** a Postgres-backed job queue resumes tasks after restarts and retries with backoff. It cancels tasks whose questions go unanswered for 24 hours, recovers tasks from suppliers that went silent, and re-sends receipts the platform refused. `GET /ui/jobs` shows the queue. Replicas of one node share replay protection through its database.
+- **Platform:** `POST /orgs/{orgId}/webhooks` with `{ "url": "https://…", "events": ["GRANT_ISSUED", "TASK_EXPIRED"] }` subscribes to events. `GET /webhooks/event-types` lists them, and `*` subscribes to all. Each delivery is signed with `X-Pistiva-Signature: sha256=HMAC(secret, timestamp + "." + body)`. The secret is returned only when the webhook is created, and deliveries are retried for up to 10 attempts. Abandoned tasks are expired after 25 hours.
+- **Multiple platform replicas:** set `PISTIVA_REDIS_URL` (for example `redis://redis:6379`) to share replay protection between them.
+
 ## Task-type contracts
 
 `GET /task-types` lists the contracts. `GET /task-types/{name}/versions/{v}` returns one, with self-contained JSON Schemas per message kind. A platform admin can publish a new pack with `POST /task-types/packs`; published versions are immutable. See [ADR 005](docs/adr/005-a2a-with-pistiva-trust-and-task-contracts.md).
@@ -109,6 +116,5 @@ A purchase above your organization's approval threshold can't be committed until
 - WebRTC direct connections with TURN relay fallback
 - Usage metering and payouts
 - KMS/HSM key custody
-- Shared nonce and idempotency stores for multi-replica gateways
 
 See the plan's "Next milestone".

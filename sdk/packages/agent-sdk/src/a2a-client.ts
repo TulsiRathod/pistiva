@@ -36,11 +36,14 @@ export interface Clarification {
   options?: string[];
 }
 
-/** Answers a provider's clarifying question; return null to cancel the task instead. */
+/**
+ * Answers a provider's clarifying question. Return null to cancel the task, or undefined to leave it
+ * waiting at the provider and continue later with `resume()`.
+ */
 export type ClarificationHandler = (
   clarification: Clarification,
   ctx: { taskId: string; round: number; provider: DiscoveredAgent },
-) => Promise<{ answer: string } | null> | { answer: string } | null;
+) => Promise<{ answer: string } | null | undefined> | { answer: string } | null | undefined;
 
 export interface RoundRecord {
   round: number;
@@ -125,15 +128,56 @@ export class A2AClient {
     // Fail before spending a grant if our own request breaks the contract.
     await this.contracts.validate(capability, version, "request", request);
 
-    let grant = await platform.requestGrant({ providerAgentId: provider.agentId, capability, ...spend });
+    const grant = await platform.requestGrant({ providerAgentId: provider.agentId, capability, ...spend });
     await this.opts.onGrant?.(grant, provider);
+    return this.loop<Res>(provider, capability, version, spend, grant, 1, "request", request, onClarification);
+  }
+
+  /**
+   * Continues a task that was waiting for a clarification answer, e.g. after the requesting process
+   * restarted. A fresh continuation grant covers the remaining rounds; the platform refuses to raise
+   * the budget or change the provider of a continued task.
+   */
+  async resume<Res = Record<string, unknown>>(
+    provider: DiscoveredAgent,
+    task: { taskId: string; capability: string; round: number; answer: { answer: string } },
+    spend: { budget: string; currency: string },
+    onClarification?: ClarificationHandler,
+  ): Promise<A2AOutcome<Res>> {
+    const version = provider.card.capabilities.find((c) => c.name === task.capability)?.version;
+    if (version === undefined) throw new Error(`${provider.orgName} does not offer ${task.capability}`);
+    await this.contracts.validate(task.capability, version, "answer", task.answer);
+    const grant = await this.opts.platform.requestGrant({
+      providerAgentId: provider.agentId,
+      capability: task.capability,
+      budget: spend.budget,
+      currency: spend.currency,
+      continueTaskId: task.taskId,
+    });
+    await this.opts.onGrant?.(grant, provider);
+    return this.loop<Res>(provider, task.capability, version, spend, grant, task.round, "answer", task.answer, onClarification);
+  }
+
+  private async loop<Res>(
+    provider: DiscoveredAgent,
+    capability: string,
+    version: number,
+    spend: { budget: string; currency: string },
+    first: IssuedGrant,
+    startRound: number,
+    startKind: MessageKind,
+    startData: Record<string, unknown>,
+    onClarification?: ClarificationHandler,
+  ): Promise<A2AOutcome<Res>> {
+    const { platform } = this.opts;
+    let grant = first;
     const grants = [grant];
     const rounds: RoundRecord[] = [];
     const base: Omit<A2AOutcome<Res>, "state"> = { taskId: grant.taskId, rounds, grants, approvalRequired: grant.approvalRequired, connection: "direct" };
 
-    let kind: MessageKind = "request";
-    let data: Record<string, unknown> = request;
-    for (let round = 1; round <= (this.opts.maxRounds ?? 5); round++) {
+    let kind: MessageKind = startKind;
+    let data: Record<string, unknown> = startData;
+    for (let round = startRound; round < startRound + (this.opts.maxRounds ?? 5); round++) {
       if (Date.parse(grant.expiresAt) - Date.now() < (this.opts.grantRenewalSeconds ?? 60) * 1000) {
         grant = await platform.requestGrant({ providerAgentId: provider.agentId, capability, budget: spend.budget, currency: spend.currency, continueTaskId: grant.taskId });
         grants.push(grant);
@@ -156,7 +200,12 @@ export class A2AClient {
         return { ...base, state, reason: reason?.kind === "text" ? reason.text : undefined };
       }
       await this.contracts.validate(capability, version, "clarification", replyData);
-      const answer = await onClarification?.(replyData as unknown as Clarification, { taskId: grant.taskId, round, provider });
+      // Without a handler there is nobody to answer: cancel, as before.
+      const answer = onClarification ? await onClarification(replyData as unknown as Clarification, { taskId: grant.taskId, round, provider }) : null;
+      if (answer === undefined) {
+        // The caller will answer later (e.g. via resume()); leave the task waiting at the provider.
+        return { ...base, state: "input-required" };
+      }
       if (!answer) {
         await this.cancel(provider, grant.taskId).catch(() => undefined);
         return { ...base, state: "canceled", reason: "Requester declined to answer the clarification" };
@@ -168,7 +217,6 @@ export class A2AClient {
     await this.cancel(provider, grant.taskId).catch(() => undefined);
     return { ...base, state: "canceled", reason: "Too many clarification rounds" };
   }
-
   /** Reads the latest state of a task this agent requested. */
   async getTask(provider: DiscoveredAgent, taskId: string): Promise<A2ATask> {
     return this.rpc<A2ATask>(provider, "tasks/get", { id: taskId }, this.bearer(provider));

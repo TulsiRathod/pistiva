@@ -294,7 +294,7 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
     if (payload.aud !== opts.agentId || status.status !== "ACTIVE" || !status.orgTrusted) {
       throw new RpcFailure(RpcErrors.unauthorized, "Assertion is not valid for this agent");
     }
-    if (!payload.jti || !core.nonces.firstUse(`${iss}:assertion:${payload.jti}`, payload.exp)) {
+    if (!payload.jti || !(await core.nonces.firstUse(`${iss}:assertion:${payload.jti}`, payload.exp))) {
       throw new RpcFailure(RpcErrors.unauthorized, "Assertion replayed");
     }
     const stored = await tasks.get(id);

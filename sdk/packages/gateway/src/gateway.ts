@@ -22,7 +22,7 @@ import {
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerA2ARoutes } from "./a2a-server.ts";
 import { LocalAuditLog, type AuditSink } from "./audit-log.ts";
-import { IdempotencyStore, MemoryTaskStore, NonceCache, type TaskStore } from "./stores.ts";
+import { IdempotencyStore, MemoryTaskStore, NonceCache, type NonceStore, type TaskStore } from "./stores.ts";
 
 export interface TaskContext {
   taskId: string;
@@ -69,6 +69,8 @@ export interface ProviderGatewayOptions {
   contracts?: ContractRegistry;
   /** Where A2A task state lives; in memory unless the host app provides a database-backed store. */
   taskStore?: TaskStore;
+  /** Where seen nonces live; in memory unless the host app shares one across replicas. */
+  nonceStore?: NonceStore;
   /** Custom sink for the gateway's own log; defaults to a JSONL file at auditLogPath. */
   audit?: AuditSink;
   auditLogPath?: string;
@@ -109,7 +111,7 @@ export class TaskRejection extends Error {
 export interface GatewayCore {
   opts: ProviderGatewayOptions;
   contracts: ContractRegistry;
-  nonces: NonceCache;
+  nonces: NonceStore;
   tasks: TaskStore;
   audit: AuditSink;
   authorize(envelope: Envelope): Promise<{ grant: GrantClaims; requesterOrgId: string }>;
@@ -138,7 +140,7 @@ export function createProviderGateway(opts: ProviderGatewayOptions): FastifyInst
   const core: GatewayCore = {
     opts,
     contracts: opts.contracts ?? new ContractRegistry(opts.platform),
-    nonces: new NonceCache(),
+    nonces: opts.nonceStore ?? new NonceCache(),
     tasks: opts.taskStore ?? new MemoryTaskStore(),
     audit: opts.audit ?? new LocalAuditLog(opts.auditLogPath),
     authorize,
@@ -216,7 +218,7 @@ export function createProviderGateway(opts: ProviderGatewayOptions): FastifyInst
     if (offered && grant.ttv !== undefined && offered.version !== grant.ttv) {
       throw new VerificationError(`Grant pins ${h.capability}@${grant.ttv} but this agent implements @${offered.version}`, "out_of_scope");
     }
-    if (!core.nonces.firstUse(`${h.from}:${h.nonce}`, h.exp)) {
+    if (!(await core.nonces.firstUse(`${h.from}:${h.nonce}`, h.exp))) {
       throw new VerificationError("Envelope replayed", "replay");
     }
     return { grant, requesterOrgId: status.orgId };

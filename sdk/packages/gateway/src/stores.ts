@@ -1,10 +1,19 @@
 import type { A2ATask, TaskResponse } from "@pistiva/agent-sdk";
 
 /**
+ * Remembers nonces until they expire. A gateway running several replicas passes a shared store
+ * (its database or Redis) so a request replayed against another replica is still caught.
+ */
+export interface NonceStore {
+  /** True the first time a nonce is seen; false on replay. */
+  firstUse(nonce: string, expSeconds: number): boolean | Promise<boolean>;
+}
+
+/**
  * In-memory stores for a single gateway process. A gateway running several replicas needs a
  * shared store (Redis or its own database) for both.
  */
-export class NonceCache {
+export class NonceCache implements NonceStore {
   private readonly seen = new Map<string, number>();
 
   /** True the first time a nonce is seen; false on replay. */

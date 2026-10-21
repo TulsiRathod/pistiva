@@ -1,5 +1,5 @@
-import type { SignedReceipt, TaskState } from "@pistiva/agent-sdk";
-import type { AuditSink, StoredTask, TaskStore } from "@pistiva/gateway";
+import type { DiscoveredAgent, SignedReceipt, TaskState } from "@pistiva/agent-sdk";
+import type { AuditSink, NonceStore, StoredTask, TaskStore } from "@pistiva/gateway";
 import type { DraftOrder, DraftStore } from "@pistiva/procurement";
 import type { Db } from "./db.ts";
 
@@ -83,21 +83,70 @@ function toTask(r: Record<string, any>): KitTask {
 export class KitRepo {
   constructor(private readonly db: Db) {}
 
-  async upsertTask(t: Pick<KitTask, "id" | "direction" | "peerAgentId" | "capability" | "taskTypeVersion" | "state"> & Partial<KitTask>): Promise<void> {
+  async upsertTask(
+    t: Pick<KitTask, "id" | "direction" | "peerAgentId" | "capability" | "taskTypeVersion" | "state"> &
+      Partial<KitTask> & { request?: Record<string, unknown>; provider?: DiscoveredAgent },
+  ): Promise<void> {
     await this.db.query(
-      `INSERT INTO kit_tasks (id, direction, peer_agent_id, peer_name, capability, task_type_version, state, rounds, budget, currency, approval_required, summary, error)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      `INSERT INTO kit_tasks (id, direction, peer_agent_id, peer_name, capability, task_type_version, state, rounds, budget, currency, approval_required, summary, error, request, provider)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        ON CONFLICT (id) DO UPDATE SET
          state = EXCLUDED.state,
          rounds = GREATEST(kit_tasks.rounds, EXCLUDED.rounds),
          peer_name = COALESCE(EXCLUDED.peer_name, kit_tasks.peer_name),
          summary = COALESCE(EXCLUDED.summary, kit_tasks.summary),
+         budget = COALESCE(kit_tasks.budget, EXCLUDED.budget),
+         currency = COALESCE(kit_tasks.currency, EXCLUDED.currency),
+         request = COALESCE(kit_tasks.request, EXCLUDED.request),
+         provider = COALESCE(EXCLUDED.provider, kit_tasks.provider),
          error = EXCLUDED.error,
          approval_required = kit_tasks.approval_required OR EXCLUDED.approval_required,
          updated_at = now()`,
       [t.id, t.direction, t.peerAgentId, t.peerName ?? null, t.capability, t.taskTypeVersion, t.state, t.rounds ?? 0,
-        t.budget ?? null, t.currency ?? null, t.approvalRequired ?? false, t.summary ?? null, t.error ?? null],
+        t.budget ?? null, t.currency ?? null, t.approvalRequired ?? false, t.summary ?? null, t.error ?? null,
+        t.request ? JSON.stringify(t.request) : null, t.provider ? JSON.stringify(t.provider) : null],
     );
+  }
+
+  /** What a resumable outbound task needs: the task, its original request and the provider it went to. */
+  async taskContext(id: string): Promise<{ task: KitTask; request?: Record<string, unknown>; provider?: DiscoveredAgent } | undefined> {
+    const { rows } = await this.db.query("SELECT * FROM kit_tasks WHERE id = $1", [id]);
+    return rows[0] ? { task: toTask(rows[0]), request: rows[0].request ?? undefined, provider: rows[0].provider ?? undefined } : undefined;
+  }
+
+  /** Outbound tasks still in flight with no progress for `ms`. */
+  async stalledOutbound(ms: number): Promise<{ task: KitTask; provider?: DiscoveredAgent }[]> {
+    const { rows } = await this.db.query(
+      `SELECT * FROM kit_tasks WHERE direction = 'outbound' AND state IN ('submitted', 'working')
+       AND updated_at < now() - ($1 || ' milliseconds')::interval AND id NOT LIKE 'local-%'`,
+      [String(ms)],
+    );
+    return rows.map((r) => ({ task: toTask(r), provider: r.provider ?? undefined }));
+  }
+
+  async unrecordedReceipts(): Promise<{ taskId: string; round: number; signed: SignedReceipt }[]> {
+    const { rows } = await this.db.query(
+      `SELECT r.task_id, r.round, r.signed FROM kit_receipts r JOIN kit_tasks t ON t.id = r.task_id
+       WHERE t.direction = 'outbound' AND r.countersigned AND NOT r.recorded LIMIT 50`,
+    );
+    return rows.map((r) => ({ taskId: r.task_id, round: r.round, signed: r.signed }));
+  }
+
+  async markRecorded(taskId: string, round: number): Promise<void> {
+    await this.db.query("UPDATE kit_receipts SET recorded = TRUE WHERE task_id = $1 AND round = $2", [taskId, round]);
+  }
+
+  async getQuestion(id: number): Promise<KitQuestion | undefined> {
+    const { rows } = await this.db.query("SELECT * FROM kit_questions WHERE id = $1", [id]);
+    return rows[0] ? this.toQuestion(rows[0]) : undefined;
+  }
+
+  async openQuestionsOlderThan(ms: number): Promise<KitQuestion[]> {
+    const { rows } = await this.db.query(
+      "SELECT * FROM kit_questions WHERE status = 'open' AND created_at < now() - ($1 || ' milliseconds')::interval",
+      [String(ms)],
+    );
+    return rows.map((r) => this.toQuestion(r));
   }
 
   async listTasks(direction?: Direction, limit = 100): Promise<KitTask[]> {
@@ -213,6 +262,25 @@ export class PgTaskStore implements TaskStore {
       "INSERT INTO gateway_tasks (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
       [task.id, JSON.stringify(task)],
     );
+  }
+}
+
+/** Seen nonces in the node's database, so replicas of one node share replay protection. */
+export class PgNonceStore implements NonceStore {
+  constructor(private readonly db: Db) {}
+
+  async firstUse(nonce: string, expSeconds: number): Promise<boolean> {
+    const { rowCount } = await this.db.query(
+      "INSERT INTO gateway_nonces (nonce, expires_at) VALUES ($1, to_timestamp($2)) ON CONFLICT (nonce) DO NOTHING",
+      [nonce, expSeconds],
+    );
+    return rowCount === 1;
+  }
+
+  /** Expired nonces can no longer be replayed (the envelope would be rejected as expired). */
+  async prune(): Promise<number> {
+    const { rowCount } = await this.db.query("DELETE FROM gateway_nonces WHERE expires_at < now() - interval '5 minutes'");
+    return rowCount ?? 0;
   }
 }
 

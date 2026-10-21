@@ -10,11 +10,12 @@ import { OperatorAuth } from "./auth.ts";
 import type { KitConfig } from "./config.ts";
 import { NodeAi } from "./ai.ts";
 import { CommitmentService } from "./commitments.ts";
+import { JobQueue } from "./jobs.ts";
 import { buildConnector, McpInventory } from "./connectors.ts";
 import { migrate, type Db } from "./db.ts";
 import { buildCapabilities, disclosureKey } from "./modules.ts";
 import { OutboundService, summarize, type OutboundRequest } from "./outbound.ts";
-import { KitRepo, PgAuditSink, PgDraftStore, PgTaskStore, type Direction } from "./repo.ts";
+import { KitRepo, PgAuditSink, PgDraftStore, PgNonceStore, PgTaskStore, type Direction } from "./repo.ts";
 
 export interface KitDeps {
   cfg: KitConfig;
@@ -33,6 +34,8 @@ export interface KitDeps {
   llmProvider?: LlmProvider;
   /** How often to check approvals the node is waiting on (default 5 s). */
   approvalPollMs?: number;
+  /** How often maintenance jobs run: question deadlines, stalled tasks, receipt re-submission (default 60 s). */
+  maintenanceMs?: number;
   /** Directory of the built operator UI; served when present. */
   webDir?: string;
   logger?: boolean;
@@ -43,6 +46,7 @@ export interface Kit {
   repo: KitRepo;
   outbound: OutboundService;
   commitments: CommitmentService;
+  jobs: JobQueue;
   close(): Promise<void>;
 }
 
@@ -83,12 +87,15 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
   };
   if (deps.publishCard !== false && card.capabilities.length) await platform.publishCard(card);
 
-  // Questions asked of us before a restart can no longer be answered: their waiting task is gone.
-  await db.query("UPDATE kit_questions SET status = 'expired', resolved_at = now() WHERE status = 'open'");
-
-  const outbound = new OutboundService({ platform, keys: deps.keys, repo, suggest: (input) => ai.suggest(input) });
-  const commitments = new CommitmentService({ db, repo, outbound, platform, pollMs: deps.approvalPollMs });
-  commitments.start();
+  const jobs = new JobQueue(db);
+  const outbound = new OutboundService({ platform, keys: deps.keys, repo, jobs, suggest: (input) => ai.suggest(input) });
+  const commitments = new CommitmentService({ db, repo, outbound, platform });
+  jobs.register("approvals.poll", () => commitments.poll());
+  jobs.every("approvals.poll", deps.approvalPollMs ?? 5000);
+  const nonces = new PgNonceStore(db);
+  jobs.register("nonces.prune", () => nonces.prune().then(() => undefined));
+  for (const kind of ["questions.expire", "outbound.recover", "receipts.resubmit", "nonces.prune"]) jobs.every(kind, deps.maintenanceMs ?? 60_000);
+  jobs.start();
   const app = createProviderGateway({
     agentId: deps.agentId,
     kid: deps.kid,
@@ -99,13 +106,14 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
     contracts,
     capabilities: handlers,
     taskStore: new PgTaskStore(db),
+    nonceStore: nonces,
     audit: new PgAuditSink(db),
     logger: deps.logger,
     onRound: (r) => recordInbound(repo, r),
     onCountersigned: (signed) => repo.saveReceipt(signed.receipt.taskId, signed, { countersigned: true }),
   });
 
-  registerOperatorApi(app, { repo, outbound, commitments, ai, cfg, contracts, disclosure, connectors, versionOf, auth: new OperatorAuth(deps.adminPassword, deps.sessionSecret), deps });
+  registerOperatorApi(app, { repo, outbound, commitments, ai, jobs, cfg, contracts, disclosure, connectors, versionOf, auth: new OperatorAuth(deps.adminPassword, deps.sessionSecret), deps });
 
   const webDir = deps.webDir ?? DEFAULT_WEB_DIR;
   if (existsSync(webDir)) {
@@ -120,8 +128,9 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
     repo,
     outbound,
     commitments,
+    jobs,
     async close() {
-      commitments.stop();
+      jobs.stop();
       await outbound.idle();
       await app.close();
       await Promise.all(Object.values(connectors).map((c) => (c instanceof McpInventory ? c.close() : undefined)));
@@ -162,6 +171,7 @@ function registerOperatorApi(
     outbound: OutboundService;
     commitments: CommitmentService;
     ai: NodeAi;
+    jobs: JobQueue;
     cfg: KitConfig;
     contracts: ContractRegistry;
     disclosure: Map<string, string[]>;
@@ -268,6 +278,8 @@ function registerOperatorApi(
   app.get("/ui/connectors", async () =>
     Promise.all(Object.entries(ctx.connectors).map(async ([name, c]) => ({ name, kind: c.kind, ...(await c.health()) }))),
   );
+
+  app.get("/ui/jobs", async () => ctx.jobs.stats());
 
   app.get("/ui/ai", async () => ({ ...ctx.ai.enabled, usage: await ctx.ai.usage() }));
 

@@ -36,7 +36,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * End-to-end control-plane checks against a real Postgres, mapped to the MVP acceptance criteria.
  * Skipped automatically when Docker is not available.
  */
-@SpringBootTest(properties = "pistiva.signing-key-file=target/test-signing-key")
+@SpringBootTest(properties = {
+        "pistiva.signing-key-file=target/test-signing-key",
+        "pistiva.webhooks.allow-http=true",
+        "pistiva.webhooks.dispatch-interval=1h",
+        "pistiva.tasks.sweep-interval=1h"})
 @AutoConfigureMockMvc
 @Testcontainers(disabledWithoutDocker = true)
 class PlatformFlowTest {
@@ -53,6 +57,12 @@ class PlatformFlowTest {
     ObjectMapper mapper;
     @Autowired
     PlatformProperties props;
+    @Autowired
+    com.pistiva.platform.webhook.WebhookDispatcher dispatcher;
+    @Autowired
+    com.pistiva.platform.task.TaskSweeper sweeper;
+    @Autowired
+    org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     String adminToken;
 
@@ -315,6 +325,79 @@ class PlatformFlowTest {
         JsonNode events = body(mvc.perform(get("/audit").param("orgId", buyer.orgId().toString())
                 .header("Authorization", "Bearer " + buyer.userToken())));
         assertThat(events.findValuesAsText("type")).contains("APPROVAL_REQUESTED", "APPROVAL_DECIDED");
+    }
+
+    @Test
+    void webhooksDeliverSignedEventsFromTheOutboxAndRetryFailures() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        java.util.List<String[]> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.concurrent.atomic.AtomicInteger failuresLeft = new java.util.concurrent.atomic.AtomicInteger(1);
+        com.sun.net.httpserver.HttpServer server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/hook", ex -> {
+            String body = new String(ex.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            received.add(new String[]{ex.getRequestHeaders().getFirst("X-Pistiva-Signature"), ex.getRequestHeaders().getFirst("X-Pistiva-Timestamp"), body,
+                    ex.getRequestHeaders().getFirst("X-Pistiva-Event")});
+            int code = failuresLeft.getAndDecrement() > 0 ? 500 : 204;
+            ex.sendResponseHeaders(code, -1);
+            ex.close();
+        });
+        server.start();
+        try {
+            String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/hook";
+            JsonNode hook = body(mvc.perform(post("/orgs/" + buyer.orgId() + "/webhooks").header("Authorization", "Bearer " + buyer.userToken())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(json(mapper.createObjectNode().put("url", url).<ObjectNode>set("events", mapper.createArrayNode().add("GRANT_DENIED")))))
+                    .andExpect(status().isOk()));
+            String secret = hook.get("secret").asText();
+            assertThat(secret).startsWith("whsec_");
+            JsonNode listed = body(mvc.perform(get("/orgs/" + buyer.orgId() + "/webhooks").header("Authorization", "Bearer " + buyer.userToken())));
+            assertThat(listed.get(0).get("secret").isNull()).isTrue();
+
+            requestGrant(buyer, supplier, "inventory.export", "1.00").andExpect(status().isForbidden()); // GRANT_DENIED
+            requestGrant(buyer, supplier, "quote.request", "1.00").andExpect(status().isOk());           // not subscribed
+
+            assertThat(dispatcher.dispatchDue()).isEqualTo(1);
+            assertThat(received).hasSize(1);                                 // first attempt got a 500
+            assertThat(dispatcher.dispatchDue()).isZero();                   // backing off
+            jdbc.update("UPDATE outbox_events SET next_attempt_at = now() WHERE delivered_at IS NULL");
+            assertThat(dispatcher.dispatchDue()).isEqualTo(1);
+            assertThat(received).hasSize(2);
+
+            String[] last = received.get(1);
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+            mac.init(new javax.crypto.spec.SecretKeySpec(secret.getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
+            String expected = "sha256=" + java.util.HexFormat.of().formatHex(mac.doFinal((last[1] + "." + last[2]).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            assertThat(last[0]).isEqualTo(expected);
+            assertThat(last[3]).isEqualTo("GRANT_DENIED");
+            assertThat(mapper.readTree(last[2]).get("details").get("reason").asText()).contains("inventory.export");
+
+            JsonNode deliveries = body(mvc.perform(get("/orgs/" + buyer.orgId() + "/webhooks/" + hook.get("id").asText() + "/deliveries")
+                    .header("Authorization", "Bearer " + buyer.userToken())));
+            assertThat(deliveries.get(0).get("attempts").asInt()).isEqualTo(2);
+            assertThat(deliveries.get(0).get("deliveredAt").isNull()).isFalse();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void sweeperExpiresAbandonedTasksButNotFinishedOnes() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        String abandoned = body(requestGrant(buyer, supplier, "quote.request", "1.00")).get("taskId").asText();
+        JsonNode finished = body(requestGrant(buyer, supplier, "quote.request", "1.00"));
+        submitRound(buyer, supplier, finished, 1, "completed").andExpect(status().isOk());
+        jdbc.update("UPDATE task_grants SET expires_at = now() - interval '2 days' WHERE task_id IN (?, ?)",
+                UUID.fromString(abandoned), UUID.fromString(finished.get("taskId").asText()));
+
+        assertThat(sweeper.sweep()).isGreaterThanOrEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM task_grants WHERE task_id = ?", String.class, UUID.fromString(abandoned))).isEqualTo("EXPIRED");
+        assertThat(jdbc.queryForObject("SELECT status FROM task_grants WHERE task_id = ?", String.class, UUID.fromString(finished.get("taskId").asText()))).isEqualTo("COMPLETED");
+        JsonNode events = body(mvc.perform(get("/audit").param("orgId", buyer.orgId().toString()).param("taskId", abandoned)
+                .header("Authorization", "Bearer " + buyer.userToken())));
+        assertThat(events.findValuesAsText("type")).contains("TASK_EXPIRED");
+        assertThat(sweeper.sweep()).isZero(); // idempotent
     }
 
     // --- helpers ---

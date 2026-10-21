@@ -47,19 +47,10 @@ function toCommitment(r: Record<string, any>): Commitment {
  * confirms only after an approver approves it in the console. The node never decides on its own.
  */
 export class CommitmentService {
-  private timer?: NodeJS.Timeout;
   private polling = false;
 
-  constructor(private readonly deps: { db: Db; repo: KitRepo; outbound: OutboundService; platform: PlatformClient; pollMs?: number }) {}
-
-  start(): void {
-    this.timer = setInterval(() => void this.poll(), this.deps.pollMs ?? 5000);
-    this.timer.unref?.();
-  }
-
-  stop(): void {
-    clearInterval(this.timer);
-  }
+  /** Polling of the approvals it waits on runs as a recurring job (see kit.ts). */
+  constructor(private readonly deps: { db: Db; repo: KitRepo; outbound: OutboundService; platform: PlatformClient }) {}
 
   async list(): Promise<Commitment[]> {
     const { rows } = await this.deps.db.query("SELECT * FROM kit_commitments ORDER BY updated_at DESC LIMIT 100");

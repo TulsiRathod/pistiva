@@ -1,10 +1,26 @@
 import { randomUUID } from "node:crypto";
-import { A2AClient, ContractRegistry, PlatformError, singleDataPart, type AgentKeyPair, type Clarification, type DiscoveredAgent, type OutboundRound, type PlatformClient } from "@pistiva/agent-sdk";
+import {
+  A2AClient,
+  ContractRegistry,
+  PlatformError,
+  singleDataPart,
+  TERMINAL_STATES,
+  type A2AOutcome,
+  type AgentKeyPair,
+  type Clarification,
+  type DiscoveredAgent,
+  type OutboundRound,
+  type PlatformClient,
+} from "@pistiva/agent-sdk";
 import type { Suggestion } from "@pistiva/llm";
+import type { JobQueue } from "./jobs.ts";
 import type { KitRepo } from "./repo.ts";
 
 /** How long an operator has to answer a supplier's question before the task is canceled. */
-const ANSWER_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+export const ANSWER_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+/** A task with no progress this long is checked with the supplier; after the second limit it fails. */
+const RECOVER_AFTER_MS = 10 * 60_000;
+const GIVE_UP_AFTER_MS = 60 * 60_000;
 
 /** How one outbound task ended. `errorCode` carries the platform's reason when no grant was issued. */
 export interface RunResult {
@@ -39,12 +55,14 @@ export function summarize(capability: string, data: Record<string, unknown> | un
 }
 
 /**
- * Requests this node sends to other businesses' agents. Runs each task in the background; when a
- * supplier asks a clarifying question, the task waits for an operator to answer it in the UI.
+ * Requests this node sends to other businesses' agents. A supplier's clarifying question does not
+ * hold a process waiting: the task is recorded as waiting, and the operator's answer becomes a
+ * durable job that resumes it under a continuation grant, on any replica, after any restart.
  */
 export class OutboundService {
-  private readonly waiters = new Map<number, (answer: { answer: string } | null) => void>();
   private readonly running = new Set<Promise<unknown>>();
+  /** Tasks this process is driving right now; recovery leaves them alone. */
+  private readonly active = new Set<string>();
   private readonly contracts: ContractRegistry;
 
   constructor(
@@ -52,20 +70,28 @@ export class OutboundService {
       platform: PlatformClient;
       keys: AgentKeyPair;
       repo: KitRepo;
+      jobs: JobQueue;
       /** Drafts an answer for the operator; never sent without them. */
       suggest?: (input: { request: Record<string, unknown>; question: string; options?: string[] }) => Promise<Suggestion | undefined>;
     },
   ) {
     this.contracts = new ContractRegistry(deps.platform);
+    deps.jobs.register("outbound.resume", (p) => this.resume(Number(p.questionId)));
+    deps.jobs.register("questions.expire", () => this.expireQuestions());
+    deps.jobs.register("outbound.recover", () => this.recoverStalled());
+    deps.jobs.register("receipts.resubmit", () => this.resubmitReceipts());
   }
 
   /** One client per task, so each grant and round is recorded against its own request. */
-  private clientFor(req: OutboundRequest, version: number, granted: (taskId: string) => void): A2AClient {
+  private clientFor(req: Omit<OutboundRequest, "providerAgentIds">, version: number, granted: (taskId: string) => void): A2AClient {
     return new A2AClient({
       platform: this.deps.platform,
       keys: this.deps.keys,
       contracts: this.contracts,
-      onGrant: (grant, provider) => (granted(grant.taskId), this.deps.repo.upsertTask({
+      onGrant: async (grant, provider) => {
+        granted(grant.taskId);
+        this.active.add(grant.taskId);
+        await this.deps.repo.upsertTask({
           id: grant.taskId,
           direction: "outbound",
           peerAgentId: provider.agentId,
@@ -76,7 +102,10 @@ export class OutboundService {
           budget: req.budget,
           currency: req.currency,
           approvalRequired: grant.approvalRequired,
-        })),
+          request: req.request,
+          provider,
+        });
+      },
       onRound: (e) => this.recordRound(e),
     });
   }
@@ -89,16 +118,13 @@ export class OutboundService {
   async start(req: OutboundRequest): Promise<{ providers: { agentId: string; orgName: string }[] }> {
     const all = await this.discover(req.capability);
     const providers = req.providerAgentIds?.length ? all.filter((a) => req.providerAgentIds!.includes(a.agentId)) : all;
-    for (const provider of providers) {
-      const run = this.runOne(provider, req).finally(() => this.running.delete(run));
-      this.running.add(run);
-    }
+    for (const provider of providers) this.track(this.runOne(provider, req));
     return { providers: providers.map((p) => ({ agentId: p.agentId, orgName: p.orgName })) };
   }
 
   /**
-   * Runs one task to its end and records it in the outbox. Never throws: a failure is returned
-   * (and recorded) so callers such as the commit flow can react to it.
+   * Runs one task until it ends or waits for an operator, and records it in the outbox. Never throws:
+   * a failure is returned (and recorded) so callers such as the commit flow can react to it.
    */
   async runOne(provider: DiscoveredAgent, req: Omit<OutboundRequest, "providerAgentIds">, approvalId?: string): Promise<RunResult> {
     const version = provider.card.capabilities.find((c) => c.name === req.capability)?.version ?? 1;
@@ -111,71 +137,146 @@ export class OutboundService {
         { budget: req.budget, currency: req.currency, approvalId },
         (c, ctx) => this.ask(c, ctx, req.request),
       );
-      await this.deps.repo.upsertTask({
-        id: outcome.taskId,
-        direction: "outbound",
-        peerAgentId: provider.agentId,
-        capability: req.capability,
-        taskTypeVersion: version,
-        state: outcome.state,
-        summary: outcome.state === "completed" ? summarize(req.capability, outcome.result as Record<string, unknown>) : outcome.reason,
-      });
-      return { taskId: outcome.taskId, state: outcome.state, result: outcome.result as Record<string, unknown> | undefined, reason: outcome.reason };
+      return await this.finish(provider, req.capability, version, outcome);
     } catch (e) {
-      // Failed after the grant (provider unreachable, bad reply): close the task we already recorded.
-      // Denied before any grant (policy, rate limit): there is no task, so record it under a local id.
-      const id = taskId ?? `local-${randomUUID()}`;
-      await this.deps.repo.upsertTask({
-        id,
-        direction: "outbound",
-        peerAgentId: provider.agentId,
-        peerName: provider.orgName,
-        capability: req.capability,
-        taskTypeVersion: version,
-        state: taskId ? "failed" : "rejected",
-        budget: req.budget,
-        currency: req.currency,
-        error: (e as Error).message,
-      });
-      return { taskId: id, state: taskId ? "failed" : "rejected", reason: (e as Error).message, errorCode: e instanceof PlatformError ? e.code : undefined };
+      return this.fail(provider, req, version, taskId, e);
+    } finally {
+      if (taskId) this.active.delete(taskId);
     }
   }
-  /** Resolves a waiting clarification. Returns false when no task is waiting on it any more. */
+
+  /** Records an operator's answer (or refusal) and schedules the task to continue. */
   async answer(questionId: number, answer: string | null): Promise<boolean> {
-    const waiter = this.waiters.get(questionId);
-    const resolved = await this.deps.repo.resolveQuestion(questionId, waiter ? (answer === null ? "declined" : "answered") : "expired", answer ?? undefined);
-    if (!waiter || !resolved) return false;
-    this.waiters.delete(questionId);
-    waiter(answer === null ? null : { answer });
+    const resolved = await this.deps.repo.resolveQuestion(questionId, answer === null ? "declined" : "answered", answer ?? undefined);
+    if (!resolved) return false;
+    await this.deps.jobs.enqueue("outbound.resume", { questionId }, { uniqueKey: `resume:${questionId}` });
+    this.track(this.deps.jobs.drain());
     return true;
   }
 
-  /** Waits for every background task; used by tests and graceful shutdown. */
+  /** Waits for every background task and due job; used by tests and graceful shutdown. */
   async idle(): Promise<void> {
     while (this.running.size) await Promise.allSettled([...this.running]);
   }
 
-  private async ask(c: Clarification, ctx: { taskId: string; round: number }, request: Record<string, unknown>): Promise<{ answer: string } | null> {
+  private track(p: Promise<unknown>): void {
+    const run = p.finally(() => this.running.delete(run));
+    this.running.add(run);
+  }
+
+  /** A question opens an operator task and leaves the A2A task waiting at the provider. */
+  private async ask(c: Clarification, ctx: { taskId: string; round: number }, request: Record<string, unknown>): Promise<undefined> {
     const id = await this.deps.repo.openQuestion(ctx.taskId, ctx.round, c);
-    // The suggestion is computed in the background; the question is visible to the operator at once.
     if (this.deps.suggest) {
-      void this.deps
-        .suggest({ request, question: c.question, options: c.options })
-        .then((s) => s && this.deps.repo.setSuggestion(id, s))
-        .catch(() => undefined);
+      // Computed in the background; the question is visible to the operator at once.
+      this.track(
+        this.deps
+          .suggest({ request, question: c.question, options: c.options })
+          .then((s) => s && this.deps.repo.setSuggestion(id, s))
+          .catch(() => undefined),
+      );
     }
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.waiters.delete(id);
-        void this.deps.repo.resolveQuestion(id, "expired");
-        resolve(null);
-      }, ANSWER_TIMEOUT_MS);
-      timer.unref?.();
-      this.waiters.set(id, (a) => {
-        clearTimeout(timer);
-        resolve(a);
-      });
+    return undefined;
+  }
+
+  private async resume(questionId: number): Promise<void> {
+    const q = await this.deps.repo.getQuestion(questionId);
+    const ctx = q && (await this.deps.repo.taskContext(q.taskId));
+    if (!q || !ctx?.provider) throw new Error(`Cannot resume question ${questionId}: task context is missing`);
+    const { task, provider, request } = ctx;
+    if (q.status === "declined") {
+      await this.cancelAtProvider(provider, task.id, "You declined to answer the supplier's question");
+      return;
+    }
+    if (q.status !== "answered" || !q.answer) return;
+    const req = { capability: task.capability, request: request ?? {}, budget: task.budget ?? "0.00", currency: task.currency ?? "INR" };
+    let taskId: string | undefined = task.id;
+    this.active.add(task.id);
+    try {
+      const outcome = await this.clientFor(req, task.taskTypeVersion, (id) => (taskId = id)).resume(
+        provider,
+        { taskId: task.id, capability: task.capability, round: q.round + 1, answer: { answer: q.answer } },
+        { budget: req.budget, currency: req.currency },
+        (c, next) => this.ask(c, next, req.request),
+      );
+      await this.finish(provider, task.capability, task.taskTypeVersion, outcome);
+    } catch (e) {
+      // A grant denial or an unreachable supplier is final for this answer; transport hiccups retry.
+      if (e instanceof PlatformError) await this.fail(provider, req, task.taskTypeVersion, taskId, e);
+      else throw e;
+    } finally {
+      this.active.delete(task.id);
+    }
+  }
+
+  /** Questions nobody answered in time: cancel the task at the supplier and close it here. */
+  private async expireQuestions(): Promise<void> {
+    for (const q of await this.deps.repo.openQuestionsOlderThan(ANSWER_TIMEOUT_MS)) {
+      if (!(await this.deps.repo.resolveQuestion(q.id, "expired"))) continue;
+      const ctx = await this.deps.repo.taskContext(q.taskId);
+      if (ctx?.provider) await this.cancelAtProvider(ctx.provider, q.taskId, "No answer within 24 hours");
+    }
+  }
+
+  /** Tasks the supplier stopped answering: ask the supplier for the task's state, then give up. */
+  private async recoverStalled(): Promise<void> {
+    for (const { task, provider } of await this.deps.repo.stalledOutbound(RECOVER_AFTER_MS)) {
+      if (this.active.has(task.id) || !provider) continue;
+      const remote = await new A2AClient({ platform: this.deps.platform, keys: this.deps.keys }).getTask(provider, task.id).catch(() => undefined);
+      const state = remote?.status.state;
+      if (state && (TERMINAL_STATES as readonly string[]).includes(state)) {
+        const data = singleDataPart(remote.status.message?.parts);
+        await this.deps.repo.upsertTask({ ...task, state, summary: summarize(task.capability, data) ?? `Recovered from the supplier: ${state}` });
+      } else if (Date.now() - Date.parse(task.updatedAt) > GIVE_UP_AFTER_MS) {
+        await this.deps.repo.upsertTask({ ...task, state: "failed", error: "The supplier stopped responding" });
+      }
+    }
+  }
+
+  /** Receipts the platform didn't accept the first time (it was down, or a network error). */
+  private async resubmitReceipts(): Promise<void> {
+    for (const r of await this.deps.repo.unrecordedReceipts()) {
+      await this.deps.platform.submitReceipt(r.signed);
+      await this.deps.repo.markRecorded(r.taskId, r.round);
+    }
+  }
+
+  private async cancelAtProvider(provider: DiscoveredAgent, taskId: string, reason: string): Promise<void> {
+    await new A2AClient({ platform: this.deps.platform, keys: this.deps.keys }).cancel(provider, taskId).catch(() => undefined);
+    const task = await this.deps.repo.getTask(taskId);
+    if (task) await this.deps.repo.upsertTask({ ...task, state: "canceled", summary: reason });
+  }
+
+  private async finish(provider: DiscoveredAgent, capability: string, version: number, outcome: A2AOutcome<unknown>): Promise<RunResult> {
+    await this.deps.repo.upsertTask({
+      id: outcome.taskId,
+      direction: "outbound",
+      peerAgentId: provider.agentId,
+      capability,
+      taskTypeVersion: version,
+      state: outcome.state,
+      summary: outcome.state === "completed" ? summarize(capability, outcome.result as Record<string, unknown>) : outcome.reason,
     });
+    return { taskId: outcome.taskId, state: outcome.state, result: outcome.result as Record<string, unknown> | undefined, reason: outcome.reason };
+  }
+
+  private async fail(provider: DiscoveredAgent, req: Omit<OutboundRequest, "providerAgentIds">, version: number, taskId: string | undefined, e: unknown): Promise<RunResult> {
+    // Failed after the grant (provider unreachable, bad reply): close the task we already recorded.
+    // Denied before any grant (policy, rate limit): there is no task, so record it under a local id.
+    const id = taskId ?? `local-${randomUUID()}`;
+    await this.deps.repo.upsertTask({
+      id,
+      direction: "outbound",
+      peerAgentId: provider.agentId,
+      peerName: provider.orgName,
+      capability: req.capability,
+      taskTypeVersion: version,
+      state: taskId ? "failed" : "rejected",
+      budget: req.budget,
+      currency: req.currency,
+      error: (e as Error).message,
+    });
+    return { taskId: id, state: taskId ? "failed" : "rejected", reason: (e as Error).message, errorCode: e instanceof PlatformError ? e.code : undefined };
   }
 
   private async recordRound(e: OutboundRound): Promise<void> {

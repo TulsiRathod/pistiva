@@ -11,7 +11,7 @@ import com.pistiva.platform.agent.AgentRepository;
 import com.pistiva.platform.common.ApiException;
 import com.pistiva.platform.common.Ed25519;
 import com.pistiva.platform.common.Jws;
-import com.pistiva.platform.common.ReplayCache;
+import com.pistiva.platform.common.ReplayStore;
 import com.pistiva.platform.org.User;
 import com.pistiva.platform.security.Principals.AgentPrincipal;
 import com.pistiva.platform.security.Principals.UserPrincipal;
@@ -35,10 +35,11 @@ public class TokenService {
     private final AgentKeyRepository agentKeys;
     private final AgentRepository agents;
     private final ObjectMapper mapper = new ObjectMapper();
-    private final ReplayCache assertionReplay = new ReplayCache();
+    private final ReplayStore assertionReplay;
 
     public TokenService(PlatformKeyService platformKeys, PlatformProperties props,
-                        AgentKeyRepository agentKeys, AgentRepository agents) {
+                        AgentKeyRepository agentKeys, AgentRepository agents, ReplayStore assertionReplay) {
+        this.assertionReplay = assertionReplay;
         this.platformKeys = platformKeys;
         this.props = props;
         this.agentKeys = agentKeys;
