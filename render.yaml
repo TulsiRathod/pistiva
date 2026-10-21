@@ -1,0 +1,42 @@
+# Render Blueprint: the Pistiva platform (Docker) and its PostgreSQL database.
+# Render dashboard -> New -> Blueprint -> pick this repository.
+databases:
+  - name: pistiva-db
+    databaseName: pistiva
+    user: pistiva
+    plan: free
+
+services:
+  - type: web
+    name: pistiva-platform
+    runtime: docker
+    rootDir: platform
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /actuator/health
+    autoDeploy: true
+    envVars:
+      - key: DB_HOST
+        fromDatabase: { name: pistiva-db, property: host }
+      - key: DB_PORT
+        fromDatabase: { name: pistiva-db, property: port }
+      - key: DB_NAME
+        fromDatabase: { name: pistiva-db, property: database }
+      - key: DB_USER
+        fromDatabase: { name: pistiva-db, property: user }
+      - key: DB_PASSWORD
+        fromDatabase: { name: pistiva-db, property: password }
+      # Random secret generated once by Render; the platform derives its Ed25519 signing key from it.
+      # Changing it invalidates every outstanding grant and session token.
+      - key: PISTIVA_SIGNING_KEY_SEED
+        generateValue: true
+      - key: PISTIVA_ADMIN_EMAIL
+        value: admin@pistiva.local
+      # Generated once; read it from the service's Environment tab to sign in as platform admin.
+      - key: PISTIVA_ADMIN_PASSWORD
+        generateValue: true
+      - key: PISTIVA_CORS_ORIGINS
+        value: https://pistiva.vercel.app
+      # The free instance has 512 MB; keep the JVM within it.
+      - key: JAVA_TOOL_OPTIONS
+        value: -XX:MaxRAMPercentage=75 -XX:+UseSerialGC

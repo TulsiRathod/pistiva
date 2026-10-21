@@ -2,7 +2,8 @@ spring:
   application:
     name: pistiva-platform
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/pistiva}
+    # DB_URL wins when set; otherwise the URL is built from parts (as hosting providers expose them).
+    url: ${DB_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:pistiva}}
     username: ${DB_USER:pistiva}
     password: ${DB_PASSWORD:pistiva}
   jpa:
