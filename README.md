@@ -18,11 +18,13 @@ sdk/        TypeScript workspace
                        ContractRegistry (AJV), PlatformClient, A2AClient (requester side, multi-turn)
   packages/gateway     provider gateway (Fastify): A2A JSON-RPC + agent card, contract validation,
                        replay/idempotency, local allowlist, per-round signed receipts
+  packages/procurement procurement modules (quote.request, order.draft) and inventory connectors
+  apps/partner-kit     the self-hosted node per business: gateway + outbox + operator UI + own Postgres
   examples/            supplier-agent (quotes from a private inventory), buyer-agent (compare + decide)
-  scripts/demo.ts      end-to-end demo with pass/fail checks
+  scripts/demo.ts      end-to-end demo with pass/fail checks; scripts/nodes.ts runs two live nodes
 console/    React + Vite admin console: org verification, agents and keys, kill switch, policy, audit
 infra/      docker-compose for the whole stack
-docs/adr/   architecture decisions 001–005
+docs/adr/   architecture decisions 001–006
 ```
 
 ## Run it
@@ -50,6 +52,7 @@ The default platform admin is `admin@pistiva.local` / `change-me-admin`. Overrid
 | `cd platform && mvn verify` | Crypto vectors shared with the SDK, plus Testcontainers flow tests: discovery filters unverified orgs, a bad card signature is rejected, out-of-scope and over-budget grants are denied and audited, the approval flag is set above the threshold, a suspended agent or revoked key is blocked, assertion replay is rejected, a receipt needs both valid signatures. Also: the domain pack is registered, published contracts are immutable, cards must name registered versions, grants pin the version and continue without a budget increase, and receipts are recorded per round until the task is terminal |
 | `cd sdk && npm test` | Legacy route: bad signature, replay, expired or wrongly addressed grant, out-of-scope capability, revoked key, suspended requester, field allowlist, idempotent retry. A2A: agent card with signed pistiva-trust card, single-round and clarification tasks with per-round receipts, cancel and owner-only `tasks/get`, missing extension, contract violations in and out, cached retries, version pinning |
 | `cd sdk && npm run demo` | Live end-to-end run against the platform. Exits non-zero if any check fails |
+| `cd sdk && npm run nodes -- --check` | Two live Partner Kit nodes against the platform: a quote with a clarification answered through the operator API, countersigned receipts, withheld fields recorded |
 
 ## Registering your own agent
 
@@ -63,13 +66,26 @@ The default platform admin is `admin@pistiva.local` / `change-me-admin`. Overrid
    AGENT_ID=… ORG_ID=… KEY_FILE=… KEY_PASSPHRASE=… npm start
    ```
 
+## Partner Kit (a node per business)
+
+Each business runs its own Pistiva node: the gateway that answers other agents, an outbox for requests it sends, an operator UI, and its own Postgres database. See [ADR 006](docs/adr/006-partner-kit.md).
+
+```bash
+cd sdk/apps/partner-kit
+cp config/agents.example.yaml config/agents.yaml      # choose modules and connectors (JSON, CSV or MCP)
+mkdir keys && cp <your agent key file> keys/agent.key.json
+AGENT_ID=… ORG_ID=… KEY_PASSPHRASE=… KIT_ADMIN_PASSWORD=… PUBLIC_URL=https://node.example.com \
+  docker compose up -d --build                         # node UI on http://localhost:9300
+```
+
+To try it locally against your local platform, run `cd sdk && npm run nodes`. It starts a supplier node on :9301 and a buyer node on :9302 (operator password `operator-password`).
+
 ## Task-type contracts
 
 `GET /task-types` lists the contracts. `GET /task-types/{name}/versions/{v}` returns one, with self-contained JSON Schemas per message kind. A platform admin can publish a new pack with `POST /task-types/packs`; published versions are immutable. See [ADR 005](docs/adr/005-a2a-with-pistiva-trust-and-task-contracts.md).
 
 ## Not in this milestone
 
-- The Partner Kit app (M2.2)
 - The human approval workflow and `order.confirm` handling (M2.3). Grants above the threshold are already flagged `approvalRequired`.
 - LLM agent modules (M2.4)
 - WebRTC direct connections with TURN relay fallback

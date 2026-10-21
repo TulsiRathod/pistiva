@@ -4,13 +4,15 @@
   "type": "module",
   "workspaces": [
     "packages/*",
+    "apps/*",
     "examples/*"
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "demo": "tsx scripts/demo.ts",
-    "keygen": "tsx scripts/keygen.ts"
+    "keygen": "tsx scripts/keygen.ts",
+    "nodes": "tsx scripts/nodes.ts"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

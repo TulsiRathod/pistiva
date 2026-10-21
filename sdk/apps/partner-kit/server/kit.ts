@@ -1,0 +1,245 @@
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import fastifyStatic from "@fastify/static";
+import { ContractRegistry, singleDataPart, type AgentCard, type AgentKeyPair, type PlatformClient } from "@pistiva/agent-sdk";
+import { createProviderGateway, type RoundRecord } from "@pistiva/gateway";
+import type { InventoryConnector } from "@pistiva/procurement";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import { OperatorAuth } from "./auth.ts";
+import type { KitConfig } from "./config.ts";
+import { buildConnector, McpInventory } from "./connectors.ts";
+import { migrate, type Db } from "./db.ts";
+import { buildCapabilities, disclosureKey } from "./modules.ts";
+import { OutboundService, summarize, type OutboundRequest } from "./outbound.ts";
+import { KitRepo, PgAuditSink, PgDraftStore, PgTaskStore, type Direction } from "./repo.ts";
+
+export interface KitDeps {
+  cfg: KitConfig;
+  db: Db;
+  platform: PlatformClient;
+  keys: AgentKeyPair;
+  agentId: string;
+  orgId: string;
+  kid: string;
+  publicUrl: string;
+  adminPassword: string;
+  sessionSecret?: string;
+  /** Publish the signed agent card on start (off in tests that use a fake platform). */
+  publishCard?: boolean;
+  /** Directory of the built operator UI; served when present. */
+  webDir?: string;
+  logger?: boolean;
+}
+
+export interface Kit {
+  app: FastifyInstance;
+  repo: KitRepo;
+  outbound: OutboundService;
+  close(): Promise<void>;
+}
+
+const DEFAULT_WEB_DIR = fileURLToPath(new URL("../web/dist", import.meta.url));
+
+/**
+ * A Pistiva node for one business: the provider gateway (A2A, verification, disclosure, receipts),
+ * an outbound requester, its own database, and an operator API + UI. Nothing here is deployed by
+ * the platform; the platform reaches this node only as an authenticated A2A peer.
+ */
+export async function createKit(deps: KitDeps): Promise<Kit> {
+  const { cfg, db, platform } = deps;
+  await migrate(db);
+  const repo = new KitRepo(db);
+  const contracts = new ContractRegistry(platform);
+  const connectors: Record<string, InventoryConnector> = Object.fromEntries(Object.entries(cfg.connectors).map(([n, c]) => [n, buildConnector(c)]));
+  const versionOf = (capability: string) => cfg.provides[capability]?.version ?? 1;
+  const { handlers, disclosure } = await buildCapabilities(cfg, { connectors, drafts: new PgDraftStore(db), repo, contracts, versionOf });
+
+  const card: AgentCard = {
+    agentId: deps.agentId,
+    orgId: deps.orgId,
+    kid: deps.kid,
+    name: cfg.agent.name,
+    version: cfg.agent.version ?? "0.1.0",
+    endpoint: deps.publicUrl,
+    protocols: ["a2a/0.3", "pistiva-envelope/1"],
+    capabilities: Object.entries(cfg.provides).map(([name, p]) => ({
+      name,
+      version: versionOf(name),
+      description: p.description ?? name,
+      responseFields: disclosure.get(name),
+    })),
+    issuedAt: Math.floor(Date.now() / 1000),
+  };
+  if (deps.publishCard !== false && card.capabilities.length) await platform.publishCard(card);
+
+  // Questions asked of us before a restart can no longer be answered: their waiting task is gone.
+  await db.query("UPDATE kit_questions SET status = 'expired', resolved_at = now() WHERE status = 'open'");
+
+  const outbound = new OutboundService({ platform, keys: deps.keys, repo });
+  const app = createProviderGateway({
+    agentId: deps.agentId,
+    kid: deps.kid,
+    keys: deps.keys,
+    platform,
+    card,
+    description: cfg.agent.description,
+    contracts,
+    capabilities: handlers,
+    taskStore: new PgTaskStore(db),
+    audit: new PgAuditSink(db),
+    logger: deps.logger,
+    onRound: (r) => recordInbound(repo, r),
+    onCountersigned: (signed) => repo.saveReceipt(signed.receipt.taskId, signed, { countersigned: true }),
+  });
+
+  registerOperatorApi(app, { repo, outbound, cfg, contracts, disclosure, connectors, versionOf, auth: new OperatorAuth(deps.adminPassword, deps.sessionSecret), deps });
+
+  const webDir = deps.webDir ?? DEFAULT_WEB_DIR;
+  if (existsSync(webDir)) {
+    await app.register(fastifyStatic, { root: webDir, wildcard: false });
+    app.setNotFoundHandler((req, reply) =>
+      req.method === "GET" && !req.url.startsWith("/ui/") ? reply.sendFile("index.html") : reply.code(404).send({ error: "not_found" }),
+    );
+  }
+
+  return {
+    app,
+    repo,
+    outbound,
+    async close() {
+      await outbound.idle();
+      await app.close();
+      await Promise.all(Object.values(connectors).map((c) => (c instanceof McpInventory ? c.close() : undefined)));
+    },
+  };
+}
+
+async function recordInbound(repo: KitRepo, r: RoundRecord): Promise<void> {
+  const data = singleDataPart(r.reply?.parts);
+  const text = r.reply?.parts.find((p) => p.kind === "text");
+  await repo.upsertTask({
+    id: r.taskId,
+    direction: "inbound",
+    peerAgentId: r.requesterAgentId,
+    peerName: `agent ${r.requesterAgentId.slice(0, 8)}`,
+    capability: r.capability,
+    taskTypeVersion: r.taskTypeVersion,
+    state: r.state,
+    rounds: r.round,
+    summary: summarize(r.capability, data),
+  });
+  await repo.addMessage(r.taskId, { round: r.round, sender: "peer", kind: r.kind, data: r.request });
+  await repo.addMessage(r.taskId, {
+    round: r.round,
+    sender: "us",
+    kind: r.state === "input-required" ? "clarification" : "result",
+    state: r.state,
+    data: data ?? (text?.kind === "text" ? { reason: text.text } : null),
+    withheld: r.fieldsWithheld,
+  });
+  await repo.saveReceipt(r.taskId, r.receipt, { countersigned: false });
+}
+
+function registerOperatorApi(
+  app: FastifyInstance,
+  ctx: {
+    repo: KitRepo;
+    outbound: OutboundService;
+    cfg: KitConfig;
+    contracts: ContractRegistry;
+    disclosure: Map<string, string[]>;
+    connectors: Record<string, InventoryConnector>;
+    versionOf: (c: string) => number;
+    auth: OperatorAuth;
+    deps: KitDeps;
+  },
+) {
+  const { repo, outbound, cfg, auth } = ctx;
+  const bearer = (req: FastifyRequest) => req.headers.authorization?.replace(/^Bearer\s+/i, "");
+
+  app.post("/ui/login", async (req, reply) => {
+    const token = auth.login((req.body as { password?: string })?.password ?? "");
+    return token ? { token } : reply.code(401).send({ error: "unauthorized", message: "Wrong password" });
+  });
+
+  app.addHook("onRequest", async (req, reply) => {
+    if (req.url.startsWith("/ui/") && req.url !== "/ui/login" && !auth.verify(bearer(req))) {
+      return reply.code(401).send({ error: "unauthorized", message: "Sign in to the node first" });
+    }
+  });
+
+  app.get("/ui/me", async () => ({
+    agent: { name: cfg.agent.name, agentId: ctx.deps.agentId, orgId: ctx.deps.orgId, publicUrl: ctx.deps.publicUrl },
+    provides: Object.keys(cfg.provides),
+    requests: cfg.requests,
+    outbound: cfg.outbound ?? {},
+    counts: await repo.counts(),
+  }));
+
+  app.get("/ui/tasks", async (req) => {
+    const direction = (req.query as { direction?: Direction }).direction;
+    return repo.listTasks(direction === "inbound" || direction === "outbound" ? direction : undefined);
+  });
+
+  app.get("/ui/tasks/:id", async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    const task = await repo.getTask(id);
+    if (!task) return reply.code(404).send({ error: "not_found", message: "No such task" });
+    return { task, messages: await repo.messages(id), receipts: await repo.receipts(id) };
+  });
+
+  app.get("/ui/questions", async (req) => repo.questions(((req.query as { status?: string }).status as "open") ?? "open"));
+
+  app.post("/ui/questions/:id/answer", async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const body = req.body as { answer?: string; decline?: boolean };
+    if (!body?.decline && !body?.answer?.trim()) return reply.code(400).send({ error: "bad_request", message: "answer is required" });
+    const ok = await outbound.answer(id, body.decline ? null : body.answer!.trim());
+    return ok ? { ok } : reply.code(409).send({ error: "conflict", message: "This question is no longer waiting for an answer" });
+  });
+
+  app.get("/ui/discover", async (req) => {
+    const capability = (req.query as { capability?: string }).capability ?? "quote.request";
+    return (await outbound.discover(capability)).map((a) => ({ agentId: a.agentId, orgName: a.orgName, orgDomain: a.orgDomain, name: a.card.name }));
+  });
+
+  app.post("/ui/outbound", async (req, reply) => {
+    const body = req.body as OutboundRequest;
+    if (!cfg.requests.includes(body?.capability)) {
+      return reply.code(400).send({ error: "bad_request", message: `This node is not configured to request ${body?.capability}` });
+    }
+    try {
+      return await outbound.start(body);
+    } catch (e) {
+      return reply.code(400).send({ error: "bad_request", message: (e as Error).message });
+    }
+  });
+
+  app.get("/ui/disclosure", async () =>
+    Promise.all(
+      Object.keys(cfg.provides).map(async (capability) => ({
+        capability,
+        version: ctx.versionOf(capability),
+        contractFields: await ctx.contracts.resultFields(capability, ctx.versionOf(capability)),
+        allowed: ctx.disclosure.get(capability) ?? [],
+      })),
+    ),
+  );
+
+  app.put("/ui/disclosure/:capability", async (req, reply) => {
+    const capability = (req.params as { capability: string }).capability;
+    if (!cfg.provides[capability]) return reply.code(404).send({ error: "not_found", message: "Not a capability this node provides" });
+    const contractFields = await ctx.contracts.resultFields(capability, ctx.versionOf(capability));
+    const fields = ((req.body as { fields?: string[] })?.fields ?? []).filter((f) => contractFields.includes(f));
+    ctx.disclosure.set(capability, fields);
+    await repo.setSetting(disclosureKey(capability), fields);
+    await new PgAuditSink(ctx.deps.db).write("disclosure.updated", { capability, fields });
+    return { capability, allowed: fields };
+  });
+
+  app.get("/ui/connectors", async () =>
+    Promise.all(Object.entries(ctx.connectors).map(async ([name, c]) => ({ name, kind: c.kind, ...(await c.health()) }))),
+  );
+
+  app.get("/ui/audit", async (req) => repo.audit(Math.min(Number((req.query as { limit?: string }).limit ?? 100), 500)));
+}

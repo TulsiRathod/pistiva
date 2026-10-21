@@ -1,0 +1,39 @@
+/* Node-specific additions on top of the shared Pistiva styles. */
+.node-id { display: flex; flex-direction: column; padding: 10px 12px; border-radius: 12px; background: var(--bg-soft); line-height: 1.35; }
+.node-id strong { font-size: 14px; color: var(--ink); }
+.side-nav .count { margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--bad); color: #fff; font-size: 12px; text-align: center; }
+.node-login .modal { gap: 14px; }
+
+.stat-link { text-align: left; cursor: pointer; font: inherit; color: inherit; align-items: stretch; justify-content: flex-start; }
+.stat-link:hover { transform: translateY(-2px); }
+.stat-link .stat-value { color: var(--ink); }
+.stat-link:first-child .stat-value { color: #fff; }
+
+.tag { display: inline-block; margin: 0 6px 6px 0; padding: 2px 8px; border-radius: 8px; background: var(--brand-soft); color: var(--brand-ink); }
+.task-line { display: flex; flex-direction: column; min-width: 0; }
+.task-line .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
+
+.thread { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
+.thread .bubble { max-width: 92%; }
+.thread .bubble pre { margin: 6px 0 0; background: transparent; border: 0; padding: 0; color: inherit; white-space: pre-wrap; }
+.bubble-head { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.75; }
+.withheld { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; font-size: 12px; color: var(--warn-ink); }
+.bubble.out .withheld { color: #ffd88a; }
+.withheld code { padding: 1px 6px; border-radius: 6px; background: var(--warn-soft); color: var(--warn-ink); }
+
+.grow { flex: 1; min-width: 140px; }
+.suppliers { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.suppliers legend { font-size: 13px; font-weight: 600; color: var(--muted); padding: 0 6px; }
+.check { flex-direction: row; align-items: center; gap: 10px; font-weight: 500; color: var(--text); cursor: pointer; }
+.check input { width: 16px; height: 16px; accent-color: var(--brand); }
+.success { color: var(--mint-ink); background: var(--mint-soft); padding: 10px 14px; border-radius: 12px; margin: 0; }
+
+.question { border-color: color-mix(in srgb, var(--warn-ink) 35%, var(--border)); }
+.question-text { font-size: 18px; margin: 14px 0; }
+
+.disclosure { padding: 16px 0; border-top: 1px solid var(--border); }
+.disclosure:first-of-type { border-top: 0; }
+.field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; margin: 10px 0 14px; }
+.field { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); }
+.field.on { border-color: color-mix(in srgb, var(--brand) 40%, var(--border)); background: var(--brand-soft); }

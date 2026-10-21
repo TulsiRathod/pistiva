@@ -1,0 +1,5 @@
+[
+  { "sku": "BOLT-M8-50", "name": "Hex bolt M8 x 50 mm, zinc", "stockOnHand": 12000, "listPrice": "4.20", "costPrice": "2.65", "warehouse": "Pune-2", "supplierNotes": "Reorder from mill on 1 Nov" },
+  { "sku": "NUT-M8", "name": "Hex nut M8, zinc", "stockOnHand": 30000, "listPrice": "1.10", "costPrice": "0.55", "warehouse": "Pune-2", "supplierNotes": "" },
+  { "sku": "BRG-6204", "name": "Deep groove ball bearing 6204-2RS", "stockOnHand": 350, "listPrice": "185.00", "costPrice": "121.00", "warehouse": "Chakan-1", "supplierNotes": "Two pallets reserved for a key account" }
+]

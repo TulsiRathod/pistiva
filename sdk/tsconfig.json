@@ -11,5 +11,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["packages/*/src", "packages/*/test", "examples/*/src", "scripts"]
+  "include": ["packages/*/src", "packages/*/test", "examples/*/src", "apps/*/server", "apps/*/test", "apps/*/examples", "scripts"]
 }

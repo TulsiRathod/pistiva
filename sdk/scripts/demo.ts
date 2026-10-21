@@ -7,100 +7,32 @@
  *   5. negative paths: over-budget grant denied, revoked key cannot start a task
  * Exits non-zero if any check fails.
  */
-import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import {
-  AGENT_CARD_PATH,
-  generateKeyPair,
-  PISTIVA_TRUST_EXTENSION,
-  kidFor,
-  PlatformClient,
-  PlatformError,
-  saveKeyFile,
-  type A2AAgentCard,
-  type AgentKeyPair,
-} from "@pistiva/agent-sdk";
+import { AGENT_CARD_PATH, PISTIVA_TRUST_EXTENSION, PlatformClient, PlatformError, type A2AAgentCard } from "@pistiva/agent-sdk";
 import { requestQuotes } from "@pistiva/example-buyer-agent";
 import { startSupplier, type InventoryItem } from "@pistiva/example-supplier-agent";
+import { api, Bootstrapper, PLATFORM_URL, waitForPlatform } from "./lib/bootstrap.ts";
 
-const PLATFORM_URL = process.env.PLATFORM_URL ?? "http://localhost:8080";
-const ADMIN_EMAIL = process.env.PISTIVA_ADMIN_EMAIL ?? "admin@pistiva.local";
-const ADMIN_PASSWORD = process.env.PISTIVA_ADMIN_PASSWORD ?? "change-me-admin";
 const SUPPLIER_HOST = process.env.SUPPLIER_HOST ?? "localhost";
-const RUN = randomBytes(3).toString("hex");
-const KEY_DIR = join(fileURLToPath(new URL("..", import.meta.url)), ".demo", RUN);
-const PASSPHRASE = process.env.KEY_PASSPHRASE ?? "demo-passphrase";
+const boot = new Bootstrapper();
+const RUN = boot.run;
+const KEY_DIR = boot.keyDir;
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
   console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
   if (!ok) failures++;
 }
-
-async function api<T>(method: string, path: string, token?: string, body?: unknown): Promise<T> {
-  const res = await fetch(PLATFORM_URL + path, {
-    method,
-    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const json = await res.json().catch(() => undefined);
-  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status} ${JSON.stringify(json)}`);
-  return json as T;
-}
-
-async function waitForPlatform() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      if ((await fetch(`${PLATFORM_URL}/actuator/health`)).ok) return;
-    } catch {
-      /* not up yet */
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  throw new Error(`Platform not reachable at ${PLATFORM_URL}`);
-}
-
-interface Bootstrapped {
-  orgId: string;
-  orgName: string;
-  userToken: string;
-  agentId: string;
-  kid: string;
-  keys: AgentKeyPair;
-}
-
-async function bootstrapOrg(adminToken: string, slug: string, orgName: string, endpoint: string): Promise<Bootstrapped> {
-  const email = `owner@${slug}-${RUN}.example.com`;
-  const { accessToken } = await api<{ accessToken: string }>("POST", "/auth/register", undefined, {
-    email,
-    password: "demo-password-123",
-    orgName,
-    domain: `${slug}-${RUN}.example.com`,
-  });
-  const me = await api<{ organizations: { orgId: string }[] }>("GET", "/me", accessToken);
-  const orgId = me.organizations[0]!.orgId;
-  await api("POST", `/orgs/${orgId}/verify`, adminToken, { method: "manual" });
-  const agent = await api<{ id: string }>("POST", "/agents", accessToken, { orgId, name: `${orgName} agent`, version: "0.1.0", endpointUrl: endpoint });
-
-  // The private key is generated and kept locally; only the public key goes to the platform.
-  const keys = generateKeyPair();
-  await saveKeyFile(join(KEY_DIR, `${slug}.key.json`), keys, PASSPHRASE);
-  const { kid } = await api<{ kid: string }>("POST", `/agents/${agent.id}/keys`, accessToken, { publicKey: keys.publicKey });
-  if (kid !== kidFor(keys.publicKey)) throw new Error("Platform and SDK disagree on the key id");
-  return { orgId, orgName, userToken: accessToken, agentId: agent.id, kid, keys };
-}
-
 async function main() {
   console.log(`Platform: ${PLATFORM_URL}   run: ${RUN}   keys: ${KEY_DIR}\n`);
   await waitForPlatform();
-  const { accessToken: adminToken } = await api<{ accessToken: string }>("POST", "/auth/login", undefined, { email: ADMIN_EMAIL, password: ADMIN_PASSWORD });
 
   console.log("1. Bootstrapping organizations and agents");
-  const buyer = await bootstrapOrg(adminToken, "acme", "Acme Manufacturing", "http://localhost:9100");
-  const s1 = await bootstrapOrg(adminToken, "bharat", "Bharat Fasteners", `http://${SUPPLIER_HOST}:9101`);
-  const s2 = await bootstrapOrg(adminToken, "deccan", "Deccan Industrial Supply", `http://${SUPPLIER_HOST}:9102`);
+  const buyer = await boot.org("acme", "Acme Manufacturing", "http://localhost:9100");
+  const s1 = await boot.org("bharat", "Bharat Fasteners", `http://${SUPPLIER_HOST}:9101`);
+  const s2 = await boot.org("deccan", "Deccan Industrial Supply", `http://${SUPPLIER_HOST}:9102`);
 
   console.log("2. Starting supplier gateways");
   const inventory = JSON.parse(

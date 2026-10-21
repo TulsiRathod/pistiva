@@ -1,0 +1,48 @@
+# One business's Pistiva node: the node and its own database. Nothing here is shared with the
+# platform or with other businesses.
+#   cp config/agents.example.yaml config/agents.yaml   # then edit
+#   put your agent key file in ./keys and set the values below
+#   docker compose up -d --build
+name: pistiva-node
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: node
+      POSTGRES_USER: node
+      POSTGRES_PASSWORD: ${NODE_DB_PASSWORD:-node}
+    volumes:
+      - nodedata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U node -d node"]
+      interval: 2s
+      retries: 30
+
+  node:
+    build:
+      context: ../..
+      dockerfile: apps/partner-kit/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PLATFORM_URL: ${PLATFORM_URL:-https://pistiva-platform.onrender.com}
+      AGENT_ID: ${AGENT_ID:?set AGENT_ID}
+      ORG_ID: ${ORG_ID:?set ORG_ID}
+      KEY_FILE: /keys/agent.key.json
+      KEY_PASSPHRASE: ${KEY_PASSPHRASE:?set KEY_PASSPHRASE}
+      DATABASE_URL: postgres://node:${NODE_DB_PASSWORD:-node}@db:5432/node
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL to the address other agents can reach}
+      KIT_ADMIN_PASSWORD: ${KIT_ADMIN_PASSWORD:?set KIT_ADMIN_PASSWORD}
+      KIT_SESSION_SECRET: ${KIT_SESSION_SECRET:-}
+      KIT_CONFIG: /sdk/apps/partner-kit/config/agents.yaml
+    volumes:
+      - ./config:/sdk/apps/partner-kit/config:ro
+      - ./data:/sdk/apps/partner-kit/data:ro
+      - ./keys:/keys:ro
+    ports:
+      - "9300:9300"
+
+volumes:
+  nodedata:

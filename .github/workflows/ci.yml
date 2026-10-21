@@ -34,7 +34,9 @@ jobs:
           cache-dependency-path: sdk/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      # Includes the Partner Kit integration tests (Testcontainers Postgres).
       - run: npm test
+      - run: npm run build:web -w @pistiva/partner-kit
 
   console:
     runs-on: ubuntu-latest

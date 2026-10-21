@@ -4,6 +4,8 @@ WORKDIR /sdk
 COPY package.json package-lock.json ./
 COPY packages/agent-sdk/package.json packages/agent-sdk/
 COPY packages/gateway/package.json packages/gateway/
+COPY packages/procurement/package.json packages/procurement/
+COPY apps/partner-kit/package.json apps/partner-kit/
 COPY examples/buyer-agent/package.json examples/buyer-agent/
 COPY examples/supplier-agent/package.json examples/supplier-agent/
 RUN npm ci --no-audit --no-fund

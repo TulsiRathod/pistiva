@@ -17,11 +17,12 @@ import {
   type Receipt,
   type SignedReceipt,
   type TaskResponse,
+  type A2ATask,
 } from "@pistiva/agent-sdk";
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerA2ARoutes } from "./a2a-server.ts";
-import { LocalAuditLog } from "./audit-log.ts";
-import { IdempotencyStore, NonceCache } from "./stores.ts";
+import { LocalAuditLog, type AuditSink } from "./audit-log.ts";
+import { IdempotencyStore, MemoryTaskStore, NonceCache, type TaskStore } from "./stores.ts";
 
 export interface TaskContext {
   taskId: string;
@@ -66,8 +67,32 @@ export interface ProviderGatewayOptions {
   card?: AgentCard;
   description?: string;
   contracts?: ContractRegistry;
+  /** Where A2A task state lives; in memory unless the host app provides a database-backed store. */
+  taskStore?: TaskStore;
+  /** Custom sink for the gateway's own log; defaults to a JSONL file at auditLogPath. */
+  audit?: AuditSink;
   auditLogPath?: string;
+  /** Called after every A2A round with the full local view of it (request data, reply and receipt). */
+  onRound?(round: RoundRecord): Promise<void> | void;
+  /** Called when the requester returns a valid countersigned receipt. */
+  onCountersigned?(receipt: SignedReceipt): Promise<void> | void;
   logger?: boolean;
+}
+
+/** The provider's own record of one round. It stays inside the provider's infrastructure. */
+export interface RoundRecord {
+  taskId: string;
+  round: number;
+  requesterAgentId: string;
+  requesterOrgId: string;
+  capability: string;
+  taskTypeVersion: number;
+  kind: "request" | "answer";
+  request: Record<string, unknown>;
+  state: A2ATask["status"]["state"];
+  reply: A2ATask["status"]["message"];
+  receipt: SignedReceipt;
+  fieldsWithheld: string[];
 }
 
 export class TaskRejection extends Error {
@@ -85,7 +110,8 @@ export interface GatewayCore {
   opts: ProviderGatewayOptions;
   contracts: ContractRegistry;
   nonces: NonceCache;
-  audit: LocalAuditLog;
+  tasks: TaskStore;
+  audit: AuditSink;
   authorize(envelope: Envelope): Promise<{ grant: GrantClaims; requesterOrgId: string }>;
   /** Local allowlist ∩ grant field list: the fields that may leave this organization. */
   disclosable(capability: string, grant: GrantClaims): Promise<string[]>;
@@ -113,7 +139,8 @@ export function createProviderGateway(opts: ProviderGatewayOptions): FastifyInst
     opts,
     contracts: opts.contracts ?? new ContractRegistry(opts.platform),
     nonces: new NonceCache(),
-    audit: new LocalAuditLog(opts.auditLogPath),
+    tasks: opts.taskStore ?? new MemoryTaskStore(),
+    audit: opts.audit ?? new LocalAuditLog(opts.auditLogPath),
     authorize,
     disclosable,
   };
@@ -160,6 +187,7 @@ export function createProviderGateway(opts: ProviderGatewayOptions): FastifyInst
       verifyReceiptSignature(r, key.publicKey, signed.requesterSignature) &&
       verifyReceiptSignature(r, opts.keys.publicKey, signed.providerSignature);
     await core.audit.write(ok ? "receipt.countersigned" : "receipt.invalid_countersignature", { taskId: r.taskId, round: r.round, receipt: signed });
+    if (ok) await opts.onCountersigned?.(signed);
     return ok ? { ok: true } : reply.code(400).send({ error: "bad_signature", message: "Countersignature does not verify" });
   });
 

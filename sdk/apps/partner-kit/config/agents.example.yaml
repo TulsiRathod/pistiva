@@ -1,0 +1,37 @@
+# Pistiva node configuration: which agent modules run, and where they read your data.
+# Copy to config/agents.yaml and edit. Paths are relative to this file.
+agent:
+  name: Bharat Fasteners quote agent
+  description: Quotes and draft orders from our own inventory
+
+connectors:
+  inventory:
+    type: json-file            # json-file | csv-file | mcp
+    path: ../data/inventory.json
+  # erp:
+  #   type: mcp                # any MCP server exposing a SKU lookup tool, run locally over stdio
+  #   command: npx
+  #   args: [tsx, examples/mcp-inventory-server.ts]
+  #   tool: lookup_sku
+
+# Task types this node answers. `module` picks the agent module; swap it to change behaviour.
+provides:
+  quote.request:
+    module: inventory-quote
+    connector: inventory
+    options:
+      priceFactorBps: 10000    # 10000 = list price
+      currency: INR
+  order.draft:
+    module: order-draft
+    options:
+      holdDays: 3
+
+# Task types operators may send from the Outbox.
+requests:
+  - quote.request
+  - order.draft
+
+outbound:
+  currency: INR
+  defaultBudget: "5000.00"

@@ -84,6 +84,20 @@ export interface A2AClientOptions {
   grantRenewalSeconds?: number;
   /** Upper bound on clarification rounds, so a provider cannot keep a task open forever. */
   maxRounds?: number;
+  /** Called when the platform issues (or renews) the task's grant, before any message is sent. */
+  onGrant?(grant: IssuedGrant, provider: DiscoveredAgent): Promise<void> | void;
+  /** Called after each verified round, e.g. so an operator UI can show the exchange. */
+  onRound?(event: OutboundRound): Promise<void> | void;
+}
+
+export interface OutboundRound {
+  taskId: string;
+  grant: IssuedGrant;
+  round: number;
+  kind: MessageKind;
+  sent: Record<string, unknown>;
+  task: A2ATask;
+  record: RoundRecord;
 }
 
 /**
@@ -112,6 +126,7 @@ export class A2AClient {
     await this.contracts.validate(capability, version, "request", request);
 
     let grant = await platform.requestGrant({ providerAgentId: provider.agentId, capability, ...spend });
+    await this.opts.onGrant?.(grant, provider);
     const grants = [grant];
     const rounds: RoundRecord[] = [];
     const base: Omit<A2AOutcome<Res>, "state"> = { taskId: grant.taskId, rounds, grants, approvalRequired: grant.approvalRequired, connection: "direct" };
@@ -122,9 +137,12 @@ export class A2AClient {
       if (Date.parse(grant.expiresAt) - Date.now() < (this.opts.grantRenewalSeconds ?? 60) * 1000) {
         grant = await platform.requestGrant({ providerAgentId: provider.agentId, capability, ...spend, continueTaskId: grant.taskId });
         grants.push(grant);
+        await this.opts.onGrant?.(grant, provider);
       }
       const task = await this.sendRound(provider, grant, capability, kind, round, data);
-      rounds.push(await this.settleReceipt(provider, task));
+      const record = await this.settleReceipt(provider, task);
+      rounds.push(record);
+      await this.opts.onRound?.({ taskId: grant.taskId, grant, round, kind, sent: data, task, record });
 
       const state = task.status.state;
       const replyData = singleDataPart(task.status.message?.parts);

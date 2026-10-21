@@ -1,0 +1,14 @@
+{
+  "name": "@pistiva/procurement",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Procurement domain modules (quote.request, order.draft) and inventory connectors",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@pistiva/agent-sdk": "*",
+    "@pistiva/gateway": "*"
+  }
+}

@@ -1,4 +1,4 @@
-import type { TaskResponse } from "@pistiva/agent-sdk";
+import type { A2ATask, TaskResponse } from "@pistiva/agent-sdk";
 
 /**
  * In-memory stores for a single gateway process. A gateway running several replicas needs a
@@ -47,5 +47,38 @@ export class IdempotencyStore {
     this.entries.set(key, { bodyHash, response, until: Date.now() + this.ttlMs });
     // A failed attempt must not be cached, or the requester could never retry it.
     response.catch(() => this.entries.delete(key));
+  }
+}
+
+/** Provider-side state of one A2A task. Persisted so a task survives a gateway restart. */
+export interface StoredTask {
+  id: string;
+  requesterAgentId: string;
+  requesterOrgId: string;
+  capability: string;
+  taskTypeVersion: number;
+  round: number;
+  state: A2ATask["status"]["state"];
+  /** Handler scratch space carried between rounds; never sent to the requester. */
+  memory: Record<string, unknown>;
+  /** The latest signed reply; absent only while the first round is running. */
+  task?: A2ATask;
+}
+
+export interface TaskStore {
+  get(id: string): Promise<StoredTask | undefined>;
+  save(task: StoredTask): Promise<void>;
+}
+
+export class MemoryTaskStore implements TaskStore {
+  private readonly tasks = new Map<string, StoredTask>();
+
+  async get(id: string) {
+    const t = this.tasks.get(id);
+    return t && structuredClone(t);
+  }
+
+  async save(task: StoredTask) {
+    this.tasks.set(task.id, structuredClone(task));
   }
 }

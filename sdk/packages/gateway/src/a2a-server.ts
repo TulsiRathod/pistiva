@@ -32,19 +32,7 @@ import {
 } from "@pistiva/agent-sdk";
 import type { FastifyInstance } from "fastify";
 import { TaskRejection, type GatewayCore, type HandlerOutcome, type TaskContext } from "./gateway.ts";
-
-interface StoredTask {
-  id: string;
-  requesterAgentId: string;
-  requesterOrgId: string;
-  capability: string;
-  taskTypeVersion: number;
-  round: number;
-  state: A2ATask["status"]["state"];
-  memory: Record<string, unknown>;
-  /** The latest signed reply; absent only while the first round is running. */
-  task?: A2ATask;
-}
+import type { StoredTask } from "./stores.ts";
 
 class RpcFailure extends Error {
   constructor(
@@ -81,7 +69,7 @@ function toRpcError(e: unknown): JsonRpcError {
  */
 export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void {
   const { opts } = core;
-  const tasks = new Map<string, StoredTask>();
+  const tasks = core.tasks;
   // Per round: (requester, task, idempotency key) -> the signed reply, so a retried round is answered once.
   const rounds = new Map<string, { bodyHash: string; reply: Promise<A2ATask> }>();
 
@@ -149,7 +137,7 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
   ): Promise<A2ATask> {
     const h = envelope.header;
     const ttv = grant.ttv ?? 1;
-    const existing = tasks.get(h.taskId);
+    const existing = await tasks.get(h.taskId);
     let stored: StoredTask;
     let expectedKind: MessageKind;
     if (!existing) {
@@ -234,7 +222,7 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
       metadata: { [PISTIVA_TRUST]: trust },
     };
     Object.assign(stored, { round, state, task });
-    tasks.set(h.taskId, stored);
+    await tasks.save(stored);
     await core.audit.write(`a2a.round.${state}`, {
       taskId: h.taskId,
       round,
@@ -243,6 +231,20 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
       requestHash: receipt.requestHash,
       responseHash: receipt.responseHash,
       fieldsReturned: state === "completed" ? Object.keys((parts[0] as { data?: object }).data ?? {}) : [],
+      fieldsWithheld: withheld,
+    });
+    await opts.onRound?.({
+      taskId: h.taskId,
+      round,
+      requesterAgentId: h.from,
+      requesterOrgId,
+      capability: h.capability,
+      taskTypeVersion: ttv,
+      kind: expectedKind as "request" | "answer",
+      request: data,
+      state,
+      reply: agentMessage,
+      receipt: trust.receipt,
       fieldsWithheld: withheld,
     });
     return task;
@@ -295,7 +297,7 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
     if (!payload.jti || !core.nonces.firstUse(`${iss}:assertion:${payload.jti}`, payload.exp)) {
       throw new RpcFailure(RpcErrors.unauthorized, "Assertion replayed");
     }
-    const stored = tasks.get(id);
+    const stored = await tasks.get(id);
     if (!stored || stored.requesterAgentId !== iss) throw new RpcFailure(RpcErrors.taskNotFound, "Task not found");
     return stored;
   }
@@ -306,6 +308,7 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
     stored.state = "canceled";
     // A cancellation is not a signed round: there is no provider answer to vouch for.
     stored.task = { ...stored.task!, status: { state: "canceled", timestamp: new Date().toISOString() }, metadata: {} };
+    await tasks.save(stored);
     await core.audit.write("a2a.canceled", { taskId: stored.id, round: stored.round });
     return stored.task;
   }

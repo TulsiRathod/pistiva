@@ -1,109 +1,9 @@
-import { randomBytes } from "node:crypto";
-import { fromMinor, PlatformClient, scaleBps, toMinor, type AgentCard, type AgentKeyPair } from "@pistiva/agent-sdk";
-import { createProviderGateway, type CapabilityHandler, type HandlerOutcome } from "@pistiva/gateway";
+import { PlatformClient, type AgentCard, type AgentKeyPair } from "@pistiva/agent-sdk";
+import { createProviderGateway } from "@pistiva/gateway";
+import { ArrayInventory, orderDraftCapability, QUOTE_RESPONSE_FIELDS, quoteCapability, type InventoryItem } from "@pistiva/procurement";
 import type { FastifyInstance } from "fastify";
 
-export interface InventoryItem {
-  sku: string;
-  name: string;
-  stockOnHand: number;
-  listPrice: string;
-  costPrice: string;
-  warehouse: string;
-  supplierNotes: string;
-}
-
-/** quote.request@1 request, as defined by the procurement domain pack. */
-export interface QuoteRequest {
-  sku: string;
-  qty: number;
-  uom?: string;
-  deliverBy?: string;
-  incoterm?: string;
-  specs?: string;
-}
-
-/** What this supplier chooses to disclose from quote.request@1's result schema. */
-export const QUOTE_RESPONSE_FIELDS = ["sku", "available", "qty", "uom", "unitPrice", "currency", "validUntil", "leadTimeDays", "paymentTerms", "terms"];
-
-const BACKORDER_LEAD_DAYS = 14;
-
-function isoDate(daysFromNow: number): string {
-  return new Date(Date.now() + daysFromNow * 24 * 3600 * 1000).toISOString().slice(0, 10);
-}
-
-/**
- * Quotes from the supplier's own inventory, locally. When stock cannot cover the quantity it asks
- * one clarifying question (partial delivery or backorder) instead of guessing. The handler sees the
- * full private record; the gateway discloses only QUOTE_RESPONSE_FIELDS ∩ the grant.
- */
-export function quoteCapability(inventory: InventoryItem[], priceFactorBps = 10_000): CapabilityHandler<QuoteRequest> {
-  function quote(item: InventoryItem, qty: number, leadTimeDays: number): HandlerOutcome {
-    // Return the whole record on purpose: the gateway's allowlist is what protects private fields.
-    return {
-      state: "completed",
-      result: {
-        ...item,
-        available: true,
-        qty,
-        uom: "EA",
-        unitPrice: scaleBps(item.listPrice, priceFactorBps),
-        currency: "INR",
-        validUntil: isoDate(7),
-        leadTimeDays,
-        paymentTerms: "NET30",
-        terms: leadTimeDays > 5 ? `Backorder, ships in ${leadTimeDays} days` : "Delivery in 5 working days",
-      },
-    };
-  }
-
-  return {
-    responseFields: QUOTE_RESPONSE_FIELDS,
-    validate(body) {
-      const uom = (body as QuoteRequest).uom;
-      return uom && uom !== "EA" ? "This supplier quotes in EA only" : null;
-    },
-    start({ sku, qty }, ctx) {
-      const item = inventory.find((i) => i.sku === sku);
-      if (!item) return { state: "completed", result: { sku, available: false, terms: "SKU not stocked" } };
-      if (item.stockOnHand >= qty) return quote(item, qty, 5);
-      ctx.memory.pending = { sku, qty };
-      // Yes/no on stock rather than the stock count, so repeated quotes reveal less about inventory.
-      return {
-        state: "input-required",
-        clarification: {
-          question: `We cannot ship ${qty} units of ${sku} from stock. Accept a partial quantity now, or backorder the full quantity?`,
-          field: "qty",
-          options: ["partial", "backorder"],
-        },
-      };
-    },
-    resume({ answer }, ctx) {
-      const pending = ctx.memory.pending as { sku: string; qty: number } | undefined;
-      const item = pending && inventory.find((i) => i.sku === pending.sku);
-      if (!pending || !item) return { state: "failed", reason: "No pending quote for this task" };
-      if (answer === "partial") return quote(item, item.stockOnHand, 5);
-      if (answer === "backorder") return quote(item, pending.qty, BACKORDER_LEAD_DAYS);
-      return { state: "input-required", clarification: { question: "Please answer partial or backorder.", field: "qty", options: ["partial", "backorder"] } };
-    },
-  };
-}
-
-/** order.draft@1: holds a draft order. A draft is not a commitment; order.confirm (with approval) is. */
-export function orderDraftCapability(): CapabilityHandler<{ sku: string; qty: number; unitPrice: string; currency: string }> {
-  return {
-    handle({ qty, unitPrice, currency }) {
-      return {
-        orderRef: `DRAFT-${randomBytes(4).toString("hex").toUpperCase()}`,
-        status: "draft",
-        total: fromMinor(toMinor(unitPrice) * BigInt(qty)),
-        currency,
-        holdUntil: isoDate(3),
-      };
-    },
-  };
-}
-
+export { QUOTE_RESPONSE_FIELDS, type InventoryItem } from "@pistiva/procurement";
 export interface SupplierConfig {
   platformUrl: string;
   agentId: string;
@@ -156,7 +56,7 @@ export async function startSupplier(cfg: SupplierConfig): Promise<{ app: Fastify
     card,
     description: `${cfg.name}: quotes and draft orders from our own inventory`,
     capabilities: {
-      "quote.request": quoteCapability(cfg.inventory, cfg.priceFactorBps),
+      "quote.request": quoteCapability(new ArrayInventory(cfg.inventory), { priceFactorBps: cfg.priceFactorBps }),
       "order.draft": orderDraftCapability(),
     },
     auditLogPath: cfg.auditLogPath,
