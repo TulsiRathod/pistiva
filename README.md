@@ -18,13 +18,14 @@ sdk/        TypeScript workspace
                        ContractRegistry (AJV), PlatformClient, A2AClient (requester side, multi-turn)
   packages/gateway     provider gateway (Fastify): A2A JSON-RPC + agent card, contract validation,
                        replay/idempotency, local allowlist, per-round signed receipts
-  packages/procurement procurement modules (quote.request, order.draft) and inventory connectors
+  packages/procurement procurement modules (quote.request, order.draft, order.confirm) and inventory connectors
   apps/partner-kit     the self-hosted node per business: gateway + outbox + operator UI + own Postgres
   examples/            supplier-agent (quotes from a private inventory), buyer-agent (compare + decide)
   scripts/demo.ts      end-to-end demo with pass/fail checks; scripts/nodes.ts runs two live nodes
-console/    React + Vite admin console: org verification, agents and keys, kill switch, policy, audit
+console/    React + Vite console: landing page, org verification, agents and keys, kill switch, approvals,
+            policy, audit, platform admin dashboard
 infra/      docker-compose for the whole stack
-docs/adr/   architecture decisions 001–006
+docs/adr/   architecture decisions 001–007
 ```
 
 ## Run it
@@ -80,13 +81,21 @@ AGENT_ID=… ORG_ID=… KEY_PASSPHRASE=… KIT_ADMIN_PASSWORD=… PUBLIC_URL=htt
 
 To try it locally against your local platform, run `cd sdk && npm run nodes`. It starts a supplier node on :9301 and a buyer node on :9302 (operator password `operator-password`).
 
+## Human approvals
+
+A purchase above your organization's approval threshold can't be committed until a person approves it. See [ADR 007](docs/adr/007-human-approvals.md).
+
+1. A buyer node's operator clicks **Commit order** on a held draft.
+2. The platform answers `approval_required`, and the node files an approval request.
+3. An owner, admin or approver decides it under **Approvals** in the console.
+4. The node confirms with the supplier automatically. Each approval backs exactly one commitment.
+
 ## Task-type contracts
 
 `GET /task-types` lists the contracts. `GET /task-types/{name}/versions/{v}` returns one, with self-contained JSON Schemas per message kind. A platform admin can publish a new pack with `POST /task-types/packs`; published versions are immutable. See [ADR 005](docs/adr/005-a2a-with-pistiva-trust-and-task-contracts.md).
 
 ## Not in this milestone
 
-- The human approval workflow and `order.confirm` handling (M2.3). Grants above the threshold are already flagged `approvalRequired`.
 - LLM agent modules (M2.4)
 - WebRTC direct connections with TURN relay fallback
 - Usage metering and payouts

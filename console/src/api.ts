@@ -126,6 +126,26 @@ export interface AdminOrg {
   lastActivity: string | null;
 }
 
+export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "CHANGES_REQUESTED";
+
+export interface Approval {
+  id: string;
+  orgId: string;
+  requesterAgentId: string;
+  providerAgentId: string;
+  capability: string;
+  reference: string;
+  amount: string;
+  currency: string;
+  summary: string | null;
+  status: ApprovalStatus;
+  requestedAt: string;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  comment: string | null;
+  used: boolean;
+}
+
 export class Api {
   constructor(private readonly token: string | null) {}
 
@@ -164,6 +184,11 @@ export class Api {
 
   policy = (orgId: string) => this.call<Policy>("GET", `/orgs/${orgId}/policy`);
   updatePolicy = (orgId: string, p: Policy) => this.call<Policy>("PUT", `/orgs/${orgId}/policy`, p);
+
+  approvals = (orgId: string, status?: ApprovalStatus) =>
+    this.call<Approval[]>("GET", `/approvals?orgId=${orgId}${status ? `&status=${status}` : ""}`);
+  decideApproval = (id: string, decision: Exclude<ApprovalStatus, "PENDING">, comment?: string) =>
+    this.call<Approval>("POST", `/approvals/${id}/decision`, { decision, comment });
 
   adminOverview = (days = 14) => this.call<AdminOverview>("GET", `/admin/overview?days=${days}`);
   adminEvents = (limit = 25) => this.call<AdminEvent[]>("GET", `/admin/events?limit=${limit}`);

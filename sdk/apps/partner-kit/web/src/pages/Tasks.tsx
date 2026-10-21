@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import type { NodeApi, NodeInfo } from "../api.ts";
+import type { Commitment, NodeApi, NodeInfo } from "../api.ts";
 import { relative, StateBadge } from "../App.tsx";
 import { useAction, useAsync } from "../useAsync.ts";
 
@@ -68,7 +68,7 @@ function TaskDetail({ api, id }: { api: NodeApi; id: string }) {
   }, [detail.reload]);
   if (detail.error) return <section className="card"><p className="error">{detail.error}</p></section>;
   if (!detail.data) return <section className="card"><p className="muted">Loading…</p></section>;
-  const { task, messages, receipts } = detail.data;
+  const { task, messages, receipts, commitment } = detail.data;
 
   return (
     <section className="card">
@@ -82,6 +82,9 @@ function TaskDetail({ api, id }: { api: NodeApi; id: string }) {
         {task.budget && ` · budget ${task.budget} ${task.currency}`}
       </p>
       {task.error && <p className="error">{task.error}</p>}
+      {task.direction === "outbound" && task.capability === "order.draft" && task.state === "completed" && (
+        <CommitPanel api={api} taskId={task.id} commitment={commitment} onChange={detail.reload} />
+      )}
 
       <div className="thread">
         {messages.map((m) => (
@@ -210,3 +213,43 @@ function NewRequest({ api, info, onDone }: { api: NodeApi; info: NodeInfo; onDon
   );
 }
 
+
+const COMMIT_LABELS: Record<Commitment["status"], [string, string]> = {
+  confirming: ["Confirming with the supplier…", "warn"],
+  awaiting_approval: ["Waiting for an approver in your organization", "warn"],
+  confirmed: ["Order confirmed", "ok"],
+  approval_rejected: ["Approval rejected", "bad"],
+  changes_requested: ["Approver requested changes", "bad"],
+  refused: ["Supplier refused the confirmation", "bad"],
+  failed: ["Confirmation failed", "bad"],
+};
+
+/** Turn a held draft into a confirmed order; above the threshold it waits for a human approver. */
+function CommitPanel({ api, taskId, commitment, onChange }: { api: NodeApi; taskId: string; commitment: Commitment | null; onChange: () => void }) {
+  const action = useAction();
+  const canCommit = !commitment || commitment.status === "failed" || commitment.status === "refused";
+  const [label, cls] = commitment ? COMMIT_LABELS[commitment.status] : ["Draft held by the supplier — not yet committed", "warn"];
+  return (
+    <div className={`commit-panel ${cls}`}>
+      <div>
+        <strong>{label}</strong>
+        {commitment && (
+          <span className="muted">
+            {" "}
+            · {commitment.orderRef} · {commitment.amount} {commitment.currency}
+          </span>
+        )}
+        {commitment?.note && <p className="muted commit-note">{commitment.note}</p>}
+        {commitment?.status === "awaiting_approval" && (
+          <p className="muted commit-note">An owner, admin or approver can decide it under Approvals in the Pistiva console. This node confirms automatically once approved.</p>
+        )}
+      </div>
+      {canCommit && (
+        <button className="btn btn-dark" disabled={action.busy} onClick={() => action.run(() => api.commit(taskId)).then(onChange)}>
+          {commitment ? "Try again" : "Commit order"}
+        </button>
+      )}
+      {action.error && <p className="error">{action.error}</p>}
+    </div>
+  );
+}

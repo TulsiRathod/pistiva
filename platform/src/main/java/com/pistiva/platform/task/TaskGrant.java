@@ -40,6 +40,8 @@ public class TaskGrant {
     private Instant createdAt;
     @Column(name = "continues_grant")
     private UUID continuesGrant;
+    @Column(name = "approval_id")
+    private UUID approvalId;
 
     protected TaskGrant() {
     }
@@ -76,4 +78,8 @@ public class TaskGrant {
     public Instant getCreatedAt() { return createdAt; }
 
     public void complete() { this.status = Status.COMPLETED; }
+
+    public void attachApproval(UUID approvalId) { this.approvalId = approvalId; }
+
+    public UUID getApprovalId() { return approvalId; }
 }

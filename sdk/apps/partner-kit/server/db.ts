@@ -88,6 +88,27 @@ const MIGRATIONS: { version: number; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 2,
+    sql: `
+      -- Turning a held draft into a confirmed order: one commitment per draft task.
+      CREATE TABLE kit_commitments (
+        id                BIGSERIAL PRIMARY KEY,
+        draft_task_id     TEXT NOT NULL UNIQUE REFERENCES kit_tasks (id),
+        provider_agent_id TEXT NOT NULL,
+        provider_name     TEXT,
+        order_ref         TEXT NOT NULL,
+        amount            TEXT NOT NULL,
+        currency          TEXT NOT NULL,
+        approval_id       TEXT,
+        status            TEXT NOT NULL,
+        confirm_task_id   TEXT,
+        note              TEXT,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `,
+  },
 ];
 
 export type Db = pg.Pool;

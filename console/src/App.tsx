@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Api, type Me } from "./api.ts";
 import { Admin } from "./pages/Admin.tsx";
 import { Agents } from "./pages/Agents.tsx";
+import { Approvals } from "./pages/Approvals.tsx";
 import { Audit } from "./pages/Audit.tsx";
 import { Landing, LogoMark } from "./pages/Landing.tsx";
 import { Login, type AuthMode } from "./pages/Login.tsx";
@@ -9,7 +10,7 @@ import { Overview } from "./pages/Overview.tsx";
 import { PolicyPage } from "./pages/PolicyPage.tsx";
 
 const TOKEN_KEY = "pistiva.token";
-type Tab = "overview" | "agents" | "policy" | "audit" | "admin";
+type Tab = "overview" | "agents" | "approvals" | "policy" | "audit" | "admin";
 
 function readToken(): string | null {
   try {
@@ -31,6 +32,12 @@ const ICONS: Record<Tab, ReactNode> = {
     <svg {...ic}>
       <rect x="5" y="7" width="14" height="11" rx="3" />
       <path d="M12 3v4M9 12h.01M15 12h.01M9.5 15h5" />
+    </svg>
+  ),
+  approvals: (
+    <svg {...ic}>
+      <path d="M9 11l3 3 8-8" />
+      <path d="M20 12v6a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h9" />
     </svg>
   ),
   policy: (
@@ -55,6 +62,7 @@ const ICONS: Record<Tab, ReactNode> = {
 const TITLES: Record<Tab, [string, string]> = {
   overview: ["Organization", "Identity, verification and status of your organization"],
   agents: ["Agents", "Register agents, manage their keys and use the kill switch"],
+  approvals: ["Approvals", "Commitments your agents can only make after a person approves them"],
   policy: ["Policy", "Rules the platform checks before every task grant"],
   audit: ["Audit log", "Grants, denials and signed receipts — metadata only"],
   admin: ["Admin dashboard", "Network health, verification queue and organization management"],
@@ -113,7 +121,7 @@ export function App() {
   if (!me) return <main className="center muted">Loading…</main>;
 
   const membership = me.organizations.find((o) => o.orgId === orgId);
-  const tabs: Tab[] = ["overview", "agents", "policy", "audit", ...(me.platformAdmin ? (["admin"] as Tab[]) : [])];
+  const tabs: Tab[] = ["overview", "agents", "approvals", "policy", "audit", ...(me.platformAdmin ? (["admin"] as Tab[]) : [])];
   const [title, subtitle] = TITLES[tab];
 
   return (
@@ -175,6 +183,7 @@ export function App() {
         )}
         {tab === "overview" && membership && <Overview api={api} orgId={membership.orgId} />}
         {tab === "agents" && membership && <Agents api={api} orgId={membership.orgId} />}
+        {tab === "approvals" && membership && <Approvals api={api} orgId={membership.orgId} role={membership.role} />}
         {tab === "policy" && membership && <PolicyPage api={api} orgId={membership.orgId} role={membership.role} />}
         {tab === "audit" && membership && <Audit api={api} orgId={membership.orgId} />}
       </main>

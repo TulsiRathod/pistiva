@@ -10,7 +10,7 @@
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { AGENT_CARD_PATH, PISTIVA_TRUST_EXTENSION, PlatformClient, PlatformError, type A2AAgentCard } from "@pistiva/agent-sdk";
+import { A2AClient, AGENT_CARD_PATH, PISTIVA_TRUST_EXTENSION, PlatformClient, PlatformError, type A2AAgentCard } from "@pistiva/agent-sdk";
 import { requestQuotes } from "@pistiva/example-buyer-agent";
 import { startSupplier, type InventoryItem } from "@pistiva/example-supplier-agent";
 import { api, Bootstrapper, PLATFORM_URL, waitForPlatform } from "./lib/bootstrap.ts";
@@ -95,6 +95,31 @@ async function main() {
     check("backorder quote covers the full quantity", big.selected?.quote.qty === 40000 && big.selected.quote.leadTimeDays === 14, big.selected?.quote.terms);
     check("above approval threshold: human approval required", big.status === "requires_approval", big.reason);
 
+    // Committing the 40000-unit draft: the platform refuses until a person in the buyer's org approves.
+    const policy = await api<Record<string, unknown>>("GET", `/orgs/${buyer.orgId}/policy`, buyer.userToken);
+    await api("PUT", `/orgs/${buyer.orgId}/policy`, buyer.userToken, { ...policy, allowedCapabilities: ["quote.request", "order.draft", "order.confirm"] });
+    const supplierForDraft = big.selected!.supplier;
+    const draftOrder = big.draft!.result!;
+    const client = new A2AClient({ platform, keys: buyer.keys });
+    const spend = { budget: draftOrder.total, currency: draftOrder.currency };
+    const blocked = await client.run(supplierForDraft, "order.confirm", { orderRef: draftOrder.orderRef }, spend).then(() => undefined, (e: unknown) => e);
+    check("order cannot be committed without the required approval", blocked instanceof PlatformError && blocked.code === "approval_required", (blocked as Error | undefined)?.message);
+
+    const approval = await platform.requestApproval({
+      providerAgentId: supplierForDraft.agentId,
+      capability: "order.confirm",
+      reference: draftOrder.orderRef,
+      amount: draftOrder.total,
+      currency: draftOrder.currency,
+      summary: { supplier: supplierForDraft.orgName },
+    });
+    await api("POST", `/approvals/${approval.id}/decision`, buyer.userToken, { decision: "APPROVED", comment: "Backorder accepted for Q4 stock" });
+    const confirmed = await client.run(supplierForDraft, "order.confirm", { orderRef: draftOrder.orderRef, approvalId: approval.id }, { ...spend, approvalId: approval.id });
+    check("after a person approves, the supplier confirms the order", confirmed.state === "completed" && confirmed.result?.status === "confirmed",
+      `${draftOrder.orderRef} ships ${confirmed.result?.expectedShipDate}`);
+    const reused = await client.run(supplierForDraft, "order.confirm", { orderRef: draftOrder.orderRef }, { ...spend, approvalId: approval.id }).then(() => undefined, (e: unknown) => e);
+    check("an approval backs exactly one commitment", reused instanceof PlatformError && reused.code === "approval_required");
+
     console.log("\n5. Policy and revocation checks");    const denied = await platform.requestGrant({ providerAgentId: s1.agentId, capability: "quote.request", budget: "999999.00", currency: "INR" }).then(
       () => undefined,
       (e: unknown) => e,
@@ -104,6 +129,7 @@ async function main() {
     const audit = await api<{ type: string }[]>("GET", `/audit?orgId=${buyer.orgId}`, buyer.userToken);
     check("denial is in the buyer's audit log", audit.some((e) => e.type === "GRANT_DENIED"));
     check("per-round receipts are in the audit log", audit.filter((e) => e.type === "RECEIPT_RECORDED").length >= 8);
+    check("the approval decision is in the audit log", audit.some((e) => e.type === "APPROVAL_DECIDED"));
 
     await api("DELETE", `/agents/${buyer.agentId}/keys/${buyer.kid}`, buyer.userToken);
     const afterRevoke = await requestQuotes({ platform, keys: buyer.keys, sku: "BOLT-M8-50", qty: 10, budget: "100.00", currency: "INR", acceptSupplier: approvedVendors }).then(

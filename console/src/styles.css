@@ -497,3 +497,11 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .feed .chip { grid-column: 1 / -1; }
   .search { width: 100%; }
 }
+
+/* ---------- Approvals ---------- */
+.approval { border-color: color-mix(in srgb, var(--warn-ink) 35%, var(--border)); display: flex; flex-direction: column; gap: 14px; }
+.approval-body { display: grid; grid-template-columns: auto 1fr; gap: 32px; align-items: center; }
+.approval-body > div { display: flex; flex-direction: column; }
+.approval-amount { font-size: 32px; font-weight: 800; color: var(--ink); letter-spacing: -0.03em; }
+.approval-body dl { margin: 0; }
+@media (max-width: 760px) { .approval-body { grid-template-columns: 1fr; gap: 12px; } }

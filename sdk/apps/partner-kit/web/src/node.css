@@ -37,3 +37,9 @@
 .field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; margin: 10px 0 14px; }
 .field { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); }
 .field.on { border-color: color-mix(in srgb, var(--brand) 40%, var(--border)); background: var(--brand-soft); }
+
+.commit-panel { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin: 12px 0; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border); }
+.commit-panel.warn { background: var(--warn-soft); }
+.commit-panel.ok { background: var(--mint-soft); }
+.commit-panel.bad { background: var(--bad-soft); }
+.commit-note { margin: 4px 0 0; }

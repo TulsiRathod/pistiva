@@ -9,6 +9,8 @@ import com.pistiva.platform.agent.Agent;
 import com.pistiva.platform.agent.AgentCard;
 import com.pistiva.platform.agent.AgentCardRepository;
 import com.pistiva.platform.agent.AgentRepository;
+import com.pistiva.platform.approval.Approval;
+import com.pistiva.platform.approval.ApprovalRepository;
 import com.pistiva.platform.audit.AuditService;
 import com.pistiva.platform.common.ApiException;
 import com.pistiva.platform.identity.PlatformKeyService;
@@ -49,12 +51,13 @@ public class GrantService {
     private final PlatformProperties props;
     private final AuditService audit;
     private final TaskTypeService taskTypes;
+    private final ApprovalRepository approvals;
     private final ObjectMapper mapper;
 
     public GrantService(AgentRepository agents, AgentCardRepository cards, OrganizationRepository orgs,
                         PolicyService policies, RateLimiter rateLimiter, TaskGrantRepository grants,
                         PlatformKeyService platformKeys, PlatformProperties props, AuditService audit,
-                        TaskTypeService taskTypes, ObjectMapper mapper) {
+                        TaskTypeService taskTypes, ApprovalRepository approvals, ObjectMapper mapper) {
         this.agents = agents;
         this.cards = cards;
         this.orgs = orgs;
@@ -65,11 +68,17 @@ public class GrantService {
         this.props = props;
         this.audit = audit;
         this.taskTypes = taskTypes;
+        this.approvals = approvals;
         this.mapper = mapper;
     }
 
     /** @param continueTaskId set to extend an existing task (e.g. a long clarification round) under a fresh grant */
-    public record GrantRequest(UUID providerAgentId, String capability, BigDecimal budget, String currency, UUID continueTaskId) {
+    /**
+     * @param continueTaskId set to extend an existing task (e.g. a long clarification round) under a fresh grant
+     * @param approvalId     an approved approval backing a commitment above the approval threshold
+     */
+    public record GrantRequest(UUID providerAgentId, String capability, BigDecimal budget, String currency, UUID continueTaskId,
+                               UUID approvalId) {
     }
 
     public record IssuedGrant(UUID taskId, UUID jti, String grant, Instant expiresAt, boolean approvalRequired) {
@@ -131,9 +140,32 @@ public class GrantService {
         boolean approvalRequired = req.budget().compareTo(rules.approvalThreshold()) > 0;
         Instant now = Instant.now();
         Instant expiresAt = now.plus(props.grantTtl());
-        TaskGrant grant = grants.save(new TaskGrant(taskId, requester.agentId(), provider.getId(), req.capability(),
+        TaskGrant pending = new TaskGrant(taskId, requester.agentId(), provider.getId(), req.capability(),
                 taskTypeVersion, req.budget(), req.currency(), approvalRequired, expiresAt,
-                previous == null ? null : previous.getJti()));
+                previous == null ? null : previous.getJti());
+
+        // A commitment above the threshold needs a human approval that matches it exactly, used once.
+        Approval approval = null;
+        if (approvalRequired && rules.commitCapabilitiesOrDefault().contains(req.capability())) {
+            if (req.approvalId() == null) {
+                throw decision.denyNeedsApproval("A human approval is required to commit " + req.budget().toPlainString()
+                        + " " + req.currency() + " (threshold " + rules.approvalThreshold().toPlainString() + ")");
+            }
+            approval = approvals.findById(req.approvalId()).orElse(null);
+            if (approval == null || approval.getStatus() != Approval.Status.APPROVED) {
+                throw decision.denyNeedsApproval("Approval is missing or not approved");
+            }
+            if (!approval.getOrgId().equals(requester.orgId()) || !approval.getRequesterAgentId().equals(requester.agentId())
+                    || !approval.getProviderAgentId().equals(provider.getId()) || !approval.getCapability().equals(req.capability())
+                    || !approval.getCurrency().equals(req.currency()) || req.budget().compareTo(approval.getAmount()) > 0) {
+                throw decision.denyNeedsApproval("Approval does not cover this commitment");
+            }
+            if (approvals.consume(approval.getId(), pending.getJti()) != 1) {
+                throw decision.denyNeedsApproval("Approval has already been used");
+            }
+            pending.attachApproval(approval.getId());
+        }
+        TaskGrant grant = grants.save(pending);
 
         ObjectNode claims = mapper.createObjectNode()
                 .put("iss", props.issuer())
@@ -150,12 +182,16 @@ public class GrantService {
                 .put("porg", provider.getOrgId().toString())
                 .put("iat", now.getEpochSecond())
                 .put("exp", expiresAt.getEpochSecond());
+        if (approval != null) {
+            claims.put("apv", approval.getId().toString());
+        }
         ArrayNode fields = claims.putArray("fld");
         disclosableFields(capability, req.capability(), taskTypeVersion).forEach(fields::add);
 
         audit.record(taskId, "GRANT_ISSUED", "agent:" + requester.agentId(), requester.orgId(), provider.getOrgId(),
                 null, null, Map.of("jti", grant.getJti(), "capability", req.capability() + "@" + taskTypeVersion,
-                        "budget", req.budget().toPlainString(), "approvalRequired", approvalRequired));
+                        "budget", req.budget().toPlainString(), "approvalRequired", approvalRequired,
+                        "approvalId", approval == null ? "" : approval.getId().toString()));
         return new IssuedGrant(taskId, grant.getJti(), platformKeys.sign(GRANT_TYP, claims), expiresAt, approvalRequired);
     }
 
@@ -203,6 +239,11 @@ public class GrantService {
             this.requester = requester;
             this.providerOrgId = providerOrgId;
             this.req = req;
+        }
+
+        ApiException denyNeedsApproval(String reason) {
+            deny(reason);
+            return new ApiException.ApprovalRequired(reason);
         }
 
         ApiException deny(String reason) {

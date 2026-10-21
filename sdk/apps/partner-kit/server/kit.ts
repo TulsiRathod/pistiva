@@ -7,6 +7,7 @@ import type { InventoryConnector } from "@pistiva/procurement";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { OperatorAuth } from "./auth.ts";
 import type { KitConfig } from "./config.ts";
+import { CommitmentService } from "./commitments.ts";
 import { buildConnector, McpInventory } from "./connectors.ts";
 import { migrate, type Db } from "./db.ts";
 import { buildCapabilities, disclosureKey } from "./modules.ts";
@@ -26,6 +27,8 @@ export interface KitDeps {
   sessionSecret?: string;
   /** Publish the signed agent card on start (off in tests that use a fake platform). */
   publishCard?: boolean;
+  /** How often to check approvals the node is waiting on (default 5 s). */
+  approvalPollMs?: number;
   /** Directory of the built operator UI; served when present. */
   webDir?: string;
   logger?: boolean;
@@ -35,6 +38,7 @@ export interface Kit {
   app: FastifyInstance;
   repo: KitRepo;
   outbound: OutboundService;
+  commitments: CommitmentService;
   close(): Promise<void>;
 }
 
@@ -76,6 +80,8 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
   await db.query("UPDATE kit_questions SET status = 'expired', resolved_at = now() WHERE status = 'open'");
 
   const outbound = new OutboundService({ platform, keys: deps.keys, repo });
+  const commitments = new CommitmentService({ db, repo, outbound, platform, pollMs: deps.approvalPollMs });
+  commitments.start();
   const app = createProviderGateway({
     agentId: deps.agentId,
     kid: deps.kid,
@@ -92,7 +98,7 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
     onCountersigned: (signed) => repo.saveReceipt(signed.receipt.taskId, signed, { countersigned: true }),
   });
 
-  registerOperatorApi(app, { repo, outbound, cfg, contracts, disclosure, connectors, versionOf, auth: new OperatorAuth(deps.adminPassword, deps.sessionSecret), deps });
+  registerOperatorApi(app, { repo, outbound, commitments, cfg, contracts, disclosure, connectors, versionOf, auth: new OperatorAuth(deps.adminPassword, deps.sessionSecret), deps });
 
   const webDir = deps.webDir ?? DEFAULT_WEB_DIR;
   if (existsSync(webDir)) {
@@ -106,7 +112,9 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
     app,
     repo,
     outbound,
+    commitments,
     async close() {
+      commitments.stop();
       await outbound.idle();
       await app.close();
       await Promise.all(Object.values(connectors).map((c) => (c instanceof McpInventory ? c.close() : undefined)));
@@ -145,6 +153,7 @@ function registerOperatorApi(
   ctx: {
     repo: KitRepo;
     outbound: OutboundService;
+    commitments: CommitmentService;
     cfg: KitConfig;
     contracts: ContractRegistry;
     disclosure: Map<string, string[]>;
@@ -185,7 +194,18 @@ function registerOperatorApi(
     const id = (req.params as { id: string }).id;
     const task = await repo.getTask(id);
     if (!task) return reply.code(404).send({ error: "not_found", message: "No such task" });
-    return { task, messages: await repo.messages(id), receipts: await repo.receipts(id) };
+    return { task, messages: await repo.messages(id), receipts: await repo.receipts(id), commitment: (await ctx.commitments.forDraft(id)) ?? null };
+  });
+
+  app.get("/ui/commitments", async () => ctx.commitments.list());
+
+  /** Commit a held draft: confirm directly, or via a human approval when the platform requires one. */
+  app.post("/ui/tasks/:id/commit", async (req, reply) => {
+    try {
+      return await ctx.commitments.commit((req.params as { id: string }).id);
+    } catch (e) {
+      return reply.code(409).send({ error: "conflict", message: (e as Error).message });
+    }
   });
 
   app.get("/ui/questions", async (req) => repo.questions(((req.query as { status?: string }).status as "open") ?? "open"));

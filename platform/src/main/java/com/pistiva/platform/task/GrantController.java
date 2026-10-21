@@ -29,14 +29,14 @@ public class GrantController {
     /** Budget is a decimal string, never a float, so amounts are exact on every side. */
     public record CreateGrantRequest(@NotNull UUID providerAgentId, @NotBlank String capability,
                                      @NotNull @DecimalMin("0") BigDecimal budget, @NotBlank String currency,
-                                     UUID continueTaskId) {
+                                     UUID continueTaskId, UUID approvalId) {
     }
 
     @PostMapping("/grants")
     public GrantService.IssuedGrant create(@Valid @RequestBody CreateGrantRequest req) {
         return grantService.issue(Principals.agent(),
                 new GrantService.GrantRequest(req.providerAgentId(), req.capability(), req.budget(), req.currency(),
-                        req.continueTaskId()));
+                        req.continueTaskId(), req.approvalId()));
     }
 
     /** Gateways verify grants offline against this key set. */

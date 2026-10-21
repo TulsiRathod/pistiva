@@ -1,9 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { A2AClient, ContractRegistry, singleDataPart, type AgentKeyPair, type Clarification, type DiscoveredAgent, type OutboundRound, type PlatformClient } from "@pistiva/agent-sdk";
+import { A2AClient, ContractRegistry, PlatformError, singleDataPart, type AgentKeyPair, type Clarification, type DiscoveredAgent, type OutboundRound, type PlatformClient } from "@pistiva/agent-sdk";
 import type { KitRepo } from "./repo.ts";
 
 /** How long an operator has to answer a supplier's question before the task is canceled. */
 const ANSWER_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+/** How one outbound task ended. `errorCode` carries the platform's reason when no grant was issued. */
+export interface RunResult {
+  taskId: string;
+  state: string;
+  result?: Record<string, unknown>;
+  reason?: string;
+  errorCode?: string;
+}
 
 export interface OutboundRequest {
   capability: string;
@@ -72,43 +81,56 @@ export class OutboundService {
     const all = await this.discover(req.capability);
     const providers = req.providerAgentIds?.length ? all.filter((a) => req.providerAgentIds!.includes(a.agentId)) : all;
     for (const provider of providers) {
-      const version = provider.card.capabilities.find((c) => c.name === req.capability)?.version ?? 1;
-      let taskId: string | undefined;
-      const run = this.clientFor(req, version, (id) => (taskId = id))
-        .run(provider, req.capability, req.request, { budget: req.budget, currency: req.currency }, (c, ctx) => this.ask(c, ctx))
-        .then(async (outcome) => {
-          await this.deps.repo.upsertTask({
-            id: outcome.taskId,
-            direction: "outbound",
-            peerAgentId: provider.agentId,
-            capability: req.capability,
-            taskTypeVersion: version,
-            state: outcome.state,
-            summary: outcome.state === "completed" ? summarize(req.capability, outcome.result as Record<string, unknown>) : outcome.reason,
-          });
-        })
-        .catch(async (e: Error) => {
-          // Failed after the grant (provider unreachable, bad reply): close the task we already recorded.
-          // Denied before any grant (policy, rate limit): there is no task, so record it under a local id.
-          await this.deps.repo.upsertTask({
-            id: taskId ?? `local-${randomUUID()}`,
-            direction: "outbound",
-            peerAgentId: provider.agentId,
-            peerName: provider.orgName,
-            capability: req.capability,
-            taskTypeVersion: 1,
-            state: taskId ? "failed" : "rejected",
-            budget: req.budget,
-            currency: req.currency,
-            error: e.message,
-          });
-        })
-        .finally(() => this.running.delete(run));
+      const run = this.runOne(provider, req).finally(() => this.running.delete(run));
       this.running.add(run);
     }
     return { providers: providers.map((p) => ({ agentId: p.agentId, orgName: p.orgName })) };
   }
 
+  /**
+   * Runs one task to its end and records it in the outbox. Never throws: a failure is returned
+   * (and recorded) so callers such as the commit flow can react to it.
+   */
+  async runOne(provider: DiscoveredAgent, req: Omit<OutboundRequest, "providerAgentIds">, approvalId?: string): Promise<RunResult> {
+    const version = provider.card.capabilities.find((c) => c.name === req.capability)?.version ?? 1;
+    let taskId: string | undefined;
+    try {
+      const outcome = await this.clientFor(req, version, (id) => (taskId = id)).run(
+        provider,
+        req.capability,
+        req.request,
+        { budget: req.budget, currency: req.currency, approvalId },
+        (c, ctx) => this.ask(c, ctx),
+      );
+      await this.deps.repo.upsertTask({
+        id: outcome.taskId,
+        direction: "outbound",
+        peerAgentId: provider.agentId,
+        capability: req.capability,
+        taskTypeVersion: version,
+        state: outcome.state,
+        summary: outcome.state === "completed" ? summarize(req.capability, outcome.result as Record<string, unknown>) : outcome.reason,
+      });
+      return { taskId: outcome.taskId, state: outcome.state, result: outcome.result as Record<string, unknown> | undefined, reason: outcome.reason };
+    } catch (e) {
+      // Failed after the grant (provider unreachable, bad reply): close the task we already recorded.
+      // Denied before any grant (policy, rate limit): there is no task, so record it under a local id.
+      const id = taskId ?? `local-${randomUUID()}`;
+      await this.deps.repo.upsertTask({
+        id,
+        direction: "outbound",
+        peerAgentId: provider.agentId,
+        peerName: provider.orgName,
+        capability: req.capability,
+        taskTypeVersion: version,
+        state: taskId ? "failed" : "rejected",
+        budget: req.budget,
+        currency: req.currency,
+        error: (e as Error).message,
+      });
+      return { taskId: id, state: taskId ? "failed" : "rejected", reason: (e as Error).message, errorCode: e instanceof PlatformError ? e.code : undefined };
+    }
+  }
   /** Resolves a waiting clarification. Returns false when no task is waiting on it any more. */
   async answer(questionId: number, answer: string | null): Promise<boolean> {
     const waiter = this.waiters.get(questionId);

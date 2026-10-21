@@ -264,7 +264,77 @@ class PlatformFlowTest {
         assertThat(events.get(0).get("type").asText()).isNotBlank();
     }
 
+    @Test
+    void commitmentAboveThresholdNeedsAMatchingSingleUseHumanApproval() throws Exception {
+        TestAgent supplier = newAgent(true, "order.confirm");
+        TestAgent buyer = newAgent(true, null);
+        JsonNode policy = body(mvc.perform(get("/orgs/" + buyer.orgId() + "/policy").header("Authorization", "Bearer " + buyer.userToken())));
+        ((ObjectNode) policy).putArray("allowedCapabilities").add("quote.request").add("order.draft").add("order.confirm");
+        mvc.perform(put("/orgs/" + buyer.orgId() + "/policy").header("Authorization", "Bearer " + buyer.userToken())
+                .contentType(MediaType.APPLICATION_JSON).content(json(policy))).andExpect(status().isOk());
+
+        requestGrant(buyer, supplier, "order.confirm", "20000.00").andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("approval_required"));
+        requestGrant(buyer, supplier, "order.confirm", "500.00").andExpect(status().isOk());
+
+        JsonNode approval = body(mvc.perform(post("/approvals").header("Authorization", "Bearer " + assertion(buyer))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("providerAgentId", supplier.agentId().toString())
+                        .put("capability", "order.confirm").put("reference", "DRAFT-1234").put("amount", "20000.00")
+                        .put("currency", "INR")))).andExpect(status().isOk()));
+        String approvalId = approval.get("id").asText();
+        assertThat(approval.get("status").asText()).isEqualTo("PENDING");
+        grantWithApproval(buyer, supplier, "20000.00", approvalId).andExpect(status().isForbidden());
+
+        // A developer of the same organization may not approve.
+        String devToken = body(mvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("email", "dev-" + UUID.randomUUID() + "@example.com")
+                        .put("password", "correct-horse-battery").put("orgName", "Dev Org")
+                        .put("domain", "dev" + UUID.randomUUID().toString().substring(0, 8) + ".example.com"))))).get("accessToken").asText();
+        String devEmail = body(mvc.perform(get("/me").header("Authorization", "Bearer " + devToken))).get("email").asText();
+        mvc.perform(post("/orgs/" + buyer.orgId() + "/members").header("Authorization", "Bearer " + buyer.userToken())
+                .contentType(MediaType.APPLICATION_JSON).content(json(mapper.createObjectNode().put("email", devEmail).put("role", "DEVELOPER"))))
+                .andExpect(status().isOk());
+        decide(devToken, approvalId, "APPROVED", null).andExpect(status().isForbidden());
+
+        decide(buyer.userToken(), approvalId, "REJECTED", null).andExpect(status().isBadRequest());
+        decide(buyer.userToken(), approvalId, "APPROVED", "Within the quarterly budget").andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("APPROVED"));
+        decide(buyer.userToken(), approvalId, "REJECTED", "changed my mind").andExpect(status().isConflict());
+
+        grantWithApproval(buyer, supplier, "25000.00", approvalId).andExpect(status().isForbidden());
+        JsonNode grant = body(grantWithApproval(buyer, supplier, "20000.00", approvalId).andExpect(status().isOk()));
+        JsonNode claims = mapper.readTree(Ed25519.b64urlDecode(grant.get("grant").asText().split("\\.")[1]));
+        assertThat(claims.get("apv").asText()).isEqualTo(approvalId);
+        grantWithApproval(buyer, supplier, "20000.00", approvalId).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value("Approval has already been used"));
+
+        JsonNode listed = body(mvc.perform(get("/approvals").param("orgId", buyer.orgId().toString())
+                .header("Authorization", "Bearer " + buyer.userToken())));
+        assertThat(listed.get(0).get("used").asBoolean()).isTrue();
+        JsonNode events = body(mvc.perform(get("/audit").param("orgId", buyer.orgId().toString())
+                .header("Authorization", "Bearer " + buyer.userToken())));
+        assertThat(events.findValuesAsText("type")).contains("APPROVAL_REQUESTED", "APPROVAL_DECIDED");
+    }
+
     // --- helpers ---
+
+    private ResultActions grantWithApproval(TestAgent requester, TestAgent provider, String budget, String approvalId) throws Exception {
+        return mvc.perform(post("/grants").header("Authorization", "Bearer " + assertion(requester))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("providerAgentId", provider.agentId().toString())
+                        .put("capability", "order.confirm").put("budget", budget).put("currency", "INR")
+                        .put("approvalId", approvalId))));
+    }
+
+    private ResultActions decide(String userToken, String approvalId, String decision, String comment) throws Exception {
+        ObjectNode body = mapper.createObjectNode().put("decision", decision);
+        if (comment != null) {
+            body.put("comment", comment);
+        }
+        return mvc.perform(post("/approvals/" + approvalId + "/decision").header("Authorization", "Bearer " + userToken)
+                .contentType(MediaType.APPLICATION_JSON).content(json(body)));
+    }
 
     private ResultActions continueGrant(TestAgent requester, TestAgent provider, String taskId, String budget) throws Exception {
         return mvc.perform(post("/grants").header("Authorization", "Bearer " + assertion(requester))

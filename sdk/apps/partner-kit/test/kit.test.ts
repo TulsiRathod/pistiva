@@ -80,7 +80,11 @@ describe("Partner Kit", { timeout: 120_000 }, () => {
     supplierCfg = {
       agent: { name: "Supplier node" },
       connectors: { inventory: { type: "json-file", path: join(dir, "inventory.json") } },
-      provides: { "quote.request": { module: "inventory-quote", connector: "inventory" }, "order.draft": { module: "order-draft" } },
+      provides: {
+        "quote.request": { module: "inventory-quote", connector: "inventory" },
+        "order.draft": { module: "order-draft" },
+        "order.confirm": { module: "order-confirm" },
+      },
       requests: [],
     };
     supplierDb = await database("supplier");
@@ -117,7 +121,7 @@ describe("Partner Kit", { timeout: 120_000 }, () => {
           version: "0.1.0",
           endpoint: supplierUrl,
           protocols: ["a2a/0.3"],
-          capabilities: [{ name: "quote.request", version: 1 }, { name: "order.draft", version: 1 }],
+          capabilities: [{ name: "quote.request", version: 1 }, { name: "order.draft", version: 1 }, { name: "order.confirm", version: 1 }],
           issuedAt: 1,
         },
       },
@@ -236,11 +240,61 @@ describe("Partner Kit", { timeout: 120_000 }, () => {
     extraDiscovered.length = 0;
   });
 
+  it("commits a large order only after a human approval, and a small one directly", async () => {
+    const token = await login(buyerUrl);
+    async function draft(qty: number): Promise<string> {
+      await ui(buyerUrl, "/ui/outbound", token, {
+        method: "POST",
+        body: JSON.stringify({
+          capability: "order.draft",
+          request: { quoteTaskId: "00000000-0000-4000-8000-000000000001", sku: "NUT-M8", qty, unitPrice: "1.10", currency: "INR" },
+          budget: "50000.00",
+          currency: "INR",
+          providerAgentIds: [supplierAgent.agentId],
+        }),
+      });
+      await buyer.outbound.idle();
+      const tasks = await ui<{ id: string; capability: string; state: string }[]>(buyerUrl, "/ui/tasks?direction=outbound", token);
+      return tasks.find((t) => t.capability === "order.draft" && t.state === "completed")!.id;
+    }
+    type C = { status: string; approvalId: string | null; note: string | null; orderRef: string };
+    const commit = (id: string) => ui<C>(buyerUrl, `/ui/tasks/${id}/commit`, token, { method: "POST", body: "{}" });
+
+    // 20000 x 1.10 = 22000.00, above the 10000.00 threshold: the node files an approval and waits.
+    const big = await draft(20000);
+    const pending = await commit(big);
+    expect(pending.status).toBe("awaiting_approval");
+    expect(platform.approvals.get(pending.approvalId!)).toMatchObject({ amount: "22000.00", capability: "order.confirm", status: "PENDING" });
+    await buyer.commitments.poll();
+    expect(await commit(big)).toMatchObject({ error: "conflict" }); // already waiting for approval
+    platform.decide(pending.approvalId!, "APPROVED");
+    await buyer.commitments.poll();
+    const done = (await ui<{ commitment: C }>(buyerUrl, `/ui/tasks/${big}`, token)).commitment;
+    expect(done.status).toBe("confirmed");
+    const { rows } = await supplierDb.query("SELECT data FROM kit_drafts WHERE order_ref = $1", [done.orderRef]);
+    expect(rows[0].data.status).toBe("confirmed");
+
+    // A rejected approval never reaches the supplier.
+    const second = await draft(15000);
+    const waiting = await commit(second);
+    platform.decide(waiting.approvalId!, "REJECTED", "Over the quarterly budget");
+    await buyer.commitments.poll();
+    const rejected = (await ui<{ commitment: C }>(buyerUrl, `/ui/tasks/${second}`, token)).commitment;
+    expect(rejected).toMatchObject({ status: "approval_rejected", note: "Over the quarterly budget" });
+    const { rows: still } = await supplierDb.query("SELECT data FROM kit_drafts WHERE order_ref = $1", [rejected.orderRef]);
+    expect(still[0].data.status).toBe("draft");
+
+    // Below the threshold no approval is needed.
+    const small = await draft(100);
+    expect((await commit(small)).status).toBe("confirmed");
+  });
+
   it("reports connector health and keeps its records across a restart", async () => {
     const sToken = await login(supplierUrl);
     const connectors = await ui<{ name: string; ok: boolean; items: number }[]>(supplierUrl, "/ui/connectors", sToken);
     expect(connectors).toEqual([expect.objectContaining({ name: "inventory", ok: true, items: 2 })]);
 
+    const before = (await supplier.repo.listTasks("inbound")).length;
     const restarted = await createKit({
       cfg: supplierCfg,
       db: supplierDb,
@@ -253,7 +307,8 @@ describe("Partner Kit", { timeout: 120_000 }, () => {
       adminPassword: PASSWORD,
       publishCard: false,
     });
-    expect((await restarted.repo.listTasks("inbound")).length).toBe(2);
+    expect(before).toBeGreaterThan(0);
+    expect((await restarted.repo.listTasks("inbound")).length).toBe(before);
     // The operator's disclosure choice survived the restart too.
     expect(await restarted.repo.getSetting("disclosure:quote.request")).toEqual(["sku", "available", "unitPrice", "currency"]);
     // Operator sessions are per process unless KIT_SESSION_SECRET is set, so the old token is refused.

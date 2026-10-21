@@ -6,6 +6,7 @@ import { signJws } from "./jws.ts";
 import type { AgentKeyPair } from "./keys.ts";
 import {
   AGENT_ASSERTION_TYP,
+  type Approval,
   type AgentCard,
   type AgentStatus,
   type DiscoveredAgent,
@@ -81,8 +82,26 @@ export class PlatformClient implements PlatformLookup {
     budget: string;
     currency: string;
     continueTaskId?: string;
+    /** An approved approval backing a commitment above the approval threshold. */
+    approvalId?: string;
   }): Promise<IssuedGrant> {
     return this.call<IssuedGrant>("POST", "/grants", req);
+  }
+
+  /** Asks this agent's organization's human approvers to authorize a commitment. */
+  async requestApproval(req: {
+    providerAgentId: string;
+    capability: string;
+    reference: string;
+    amount: string;
+    currency: string;
+    summary?: Record<string, unknown>;
+  }): Promise<Approval> {
+    return this.call<Approval>("POST", "/approvals", req);
+  }
+
+  async approval(id: string): Promise<Approval> {
+    return this.call<Approval>("GET", `/approvals/${id}`);
   }
 
   async submitReceipt(signed: SignedReceipt): Promise<{ taskId: string; status: string; alreadyRecorded: boolean }> {

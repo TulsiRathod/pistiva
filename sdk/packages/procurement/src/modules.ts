@@ -121,6 +121,29 @@ export class MemoryDraftStore implements DraftStore {
   }
 }
 
+/**
+ * order.confirm@1: commits a held draft. Defence in depth on the provider side: the platform only
+ * issues a commitment grant above the threshold against a human approval, and this handler also
+ * refuses a grant that needed one but carries none, or that doesn't cover the draft's total.
+ */
+export function orderConfirmCapability(store: DraftStore, shipInDays = 5) {
+  const handler: CapabilityHandler<{ orderRef: string; approvalId?: string }> = {
+    async start({ orderRef }, ctx) {
+      const draft = await store.get(orderRef);
+      if (!draft || draft.requesterAgentId !== ctx.requesterAgentId) return { state: "rejected", reason: "No such draft order for this requester" };
+      if (draft.status !== "draft") return { state: "rejected", reason: `Order is already ${draft.status}` };
+      if (draft.holdUntil < new Date().toISOString().slice(0, 10)) return { state: "rejected", reason: "The draft's hold has expired; request a new quote" };
+      if (ctx.grant.apr && !ctx.grant.apv) return { state: "rejected", reason: "This commitment requires a human approval on the buying side" };
+      if (toMinor(ctx.grant.bud) < toMinor(draft.total) || ctx.grant.cur !== draft.currency) {
+        return { state: "rejected", reason: `The grant covers ${ctx.grant.bud} ${ctx.grant.cur}; the order totals ${draft.total} ${draft.currency}` };
+      }
+      await store.save({ ...draft, status: "confirmed" });
+      return { state: "completed", result: { orderRef, status: "confirmed", expectedShipDate: isoDate(shipInDays) } };
+    },
+  };
+  return handler;
+}
+
 /** order.draft@1: holds a draft order. A draft is not a commitment; order.confirm (with approval) is. */
 export function orderDraftCapability(store: DraftStore = new MemoryDraftStore(), holdDays = 3) {
   const handler: CapabilityHandler<{ quoteTaskId: string; sku: string; qty: number; unitPrice: string; currency: string }> = {

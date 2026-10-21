@@ -58,6 +58,20 @@ export interface Question {
   peerName?: string | null;
 }
 
+export interface Commitment {
+  id: number;
+  draftTaskId: string;
+  providerName: string | null;
+  orderRef: string;
+  amount: string;
+  currency: string;
+  approvalId: string | null;
+  status: "confirming" | "awaiting_approval" | "confirmed" | "approval_rejected" | "changes_requested" | "refused" | "failed";
+  confirmTaskId: string | null;
+  note: string | null;
+  updatedAt: string;
+}
+
 export interface Disclosure {
   capability: string;
   version: number;
@@ -117,7 +131,10 @@ export class NodeApi {
   login = (password: string) => this.call<{ token: string }>("POST", "/ui/login", { password });
   me = () => this.call<NodeInfo>("GET", "/ui/me");
   tasks = (direction?: "inbound" | "outbound") => this.call<Task[]>("GET", `/ui/tasks${direction ? `?direction=${direction}` : ""}`);
-  task = (id: string) => this.call<{ task: Task; messages: Message[]; receipts: Receipt[] }>("GET", `/ui/tasks/${encodeURIComponent(id)}`);
+  task = (id: string) =>
+    this.call<{ task: Task; messages: Message[]; receipts: Receipt[]; commitment: Commitment | null }>("GET", `/ui/tasks/${encodeURIComponent(id)}`);
+  commit = (draftTaskId: string) => this.call<Commitment>("POST", `/ui/tasks/${encodeURIComponent(draftTaskId)}/commit`, {});
+  commitments = () => this.call<Commitment[]>("GET", "/ui/commitments");
   questions = (status = "open") => this.call<Question[]>("GET", `/ui/questions?status=${status}`);
   answer = (id: number, answer: string | null) =>
     this.call<{ ok: boolean }>("POST", `/ui/questions/${id}/answer`, answer === null ? { decline: true } : { answer });

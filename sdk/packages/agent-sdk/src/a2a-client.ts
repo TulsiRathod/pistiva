@@ -116,7 +116,7 @@ export class A2AClient {
     provider: DiscoveredAgent,
     capability: string,
     request: Req,
-    spend: { budget: string; currency: string },
+    spend: { budget: string; currency: string; approvalId?: string },
     onClarification?: ClarificationHandler,
   ): Promise<A2AOutcome<Res>> {
     const { platform } = this.opts;
@@ -135,7 +135,7 @@ export class A2AClient {
     let data: Record<string, unknown> = request;
     for (let round = 1; round <= (this.opts.maxRounds ?? 5); round++) {
       if (Date.parse(grant.expiresAt) - Date.now() < (this.opts.grantRenewalSeconds ?? 60) * 1000) {
-        grant = await platform.requestGrant({ providerAgentId: provider.agentId, capability, ...spend, continueTaskId: grant.taskId });
+        grant = await platform.requestGrant({ providerAgentId: provider.agentId, capability, budget: spend.budget, currency: spend.currency, continueTaskId: grant.taskId });
         grants.push(grant);
         await this.opts.onGrant?.(grant, provider);
       }

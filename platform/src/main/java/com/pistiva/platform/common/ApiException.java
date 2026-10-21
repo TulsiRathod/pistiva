@@ -57,4 +57,11 @@ public class ApiException extends RuntimeException {
             super(HttpStatus.FORBIDDEN, "policy_denied", reason);
         }
     }
+
+    /** A commitment needs a human approval first; the caller should request one and retry with it. */
+    public static class ApprovalRequired extends ApiException {
+        public ApprovalRequired(String reason) {
+            super(HttpStatus.FORBIDDEN, "approval_required", reason);
+        }
+    }
 }

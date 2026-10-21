@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import {
   GRANT_TYP,
   generateKeyPair,
+  PlatformError,
+  toMinor,
+  type Approval,
   kidFor,
   signJws,
   verifyReceiptSignature,
@@ -49,10 +52,20 @@ export class FakePlatform implements PlatformLookup {
   private readonly platformKeys = generateKeyPair();
   private readonly platformKid = "platform-test";
   private readonly statuses = new Map<string, AgentStatus>();
+  private readonly agentsById = new Map<string, FakeAgent>();
+  readonly approvals = new Map<string, Approval>();
+  readonly approvalThreshold = "10000.00";
+
+  /** What an approver does in the console. */
+  decide(approvalId: string, status: "APPROVED" | "REJECTED" | "CHANGES_REQUESTED", comment?: string) {
+    const a = this.approvals.get(approvalId)!;
+    Object.assign(a, { status, comment: comment ?? null, decidedAt: new Date().toISOString() });
+  }
 
   registerAgent(): FakeAgent {
     const keys = generateKeyPair();
     const agent = { agentId: randomUUID(), orgId: randomUUID(), kid: kidFor(keys.publicKey), keys };
+    this.agentsById.set(agent.agentId, agent);
     this.statuses.set(agent.agentId, {
       agentId: agent.agentId,
       orgId: agent.orgId,
@@ -95,6 +108,9 @@ export class FakePlatform implements PlatformLookup {
     subject?: string;
     taskId?: string;
     taskTypeVersion?: number;
+    budget?: string;
+    approvalRequired?: boolean;
+    approvalId?: string;
   }): IssuedGrant {
     const now = Math.floor(Date.now() / 1000);
     const taskId = opts.taskId ?? randomUUID();
@@ -111,9 +127,10 @@ export class FakePlatform implements PlatformLookup {
         tid: taskId,
         cap: opts.capability,
         ttv: opts.taskTypeVersion ?? 1,
-        bud: "100.00",
+        bud: opts.budget ?? "100.00",
         cur: "INR",
-        apr: false,
+        apr: opts.approvalRequired ?? false,
+        ...(opts.approvalId ? { apv: opts.approvalId } : {}),
         rorg: opts.requester.orgId,
         porg: opts.provider.orgId,
         fld: opts.fields ?? [],
@@ -122,7 +139,7 @@ export class FakePlatform implements PlatformLookup {
       },
       this.platformKeys,
     );
-    return { taskId, jti, grant, expiresAt: new Date(exp * 1000).toISOString(), approvalRequired: false };
+    return { taskId, jti, grant, expiresAt: new Date(exp * 1000).toISOString(), approvalRequired: opts.approvalRequired ?? false };
   }
 
   /** A requester-side PlatformClient double that issues grants and checks receipts like the real platform. */
@@ -131,8 +148,25 @@ export class FakePlatform implements PlatformLookup {
       issuer: this.issuer,
       agentId: agent.agentId,
       kid: agent.kid,
-      requestGrant: async (req: { capability: string; continueTaskId?: string }) =>
-        this.issueGrant({ requester: agent, provider, capability: req.capability, fields, taskId: req.continueTaskId }),
+      requestGrant: async (req: { capability: string; budget?: string; continueTaskId?: string; approvalId?: string; providerAgentId?: string }) => {
+        const target = this.agentsById.get(req.providerAgentId ?? "") ?? provider;
+        const approvalRequired = !!req.budget && toMinor(req.budget) > toMinor(this.approvalThreshold);
+        // Same gate as the platform: a commitment above the threshold needs an approved, unused approval.
+        if (approvalRequired && req.capability === "order.confirm") {
+          const a = req.approvalId ? this.approvals.get(req.approvalId) : undefined;
+          if (!a || a.status !== "APPROVED" || a.used || toMinor(req.budget!) > toMinor(a.amount)) {
+            throw new PlatformError(403, "approval_required", "A human approval is required");
+          }
+          a.used = true;
+        }
+        return this.issueGrant({ requester: agent, provider: target, capability: req.capability, fields, taskId: req.continueTaskId, budget: req.budget, approvalRequired, approvalId: req.approvalId });
+      },
+      requestApproval: async (req: { providerAgentId: string; capability: string; reference: string; amount: string; currency: string }) => {
+        const a: Approval = { id: randomUUID(), orgId: agent.orgId, requesterAgentId: agent.agentId, ...req, summary: null, status: "PENDING", requestedAt: new Date().toISOString(), decidedBy: null, decidedAt: null, comment: null, used: false };
+        this.approvals.set(a.id, a);
+        return structuredClone(a);
+      },
+      approval: async (id: string) => structuredClone(this.approvals.get(id)!),
       taskType: (name: string, version: number) => this.taskType(name, version),
       agentStatus: (id: string) => this.agentStatus(id),
       jwks: () => this.jwks(),

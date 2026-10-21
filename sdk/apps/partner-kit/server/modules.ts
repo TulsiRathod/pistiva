@@ -1,6 +1,6 @@
 import type { ContractRegistry } from "@pistiva/agent-sdk";
 import type { CapabilityHandler } from "@pistiva/gateway";
-import { orderDraftCapability, quoteCapability, type DraftStore, type InventoryConnector, type QuoteOptions } from "@pistiva/procurement";
+import { orderConfirmCapability, orderDraftCapability, quoteCapability, type DraftStore, type InventoryConnector, type QuoteOptions } from "@pistiva/procurement";
 import type { KitConfig } from "./config.ts";
 import type { KitRepo } from "./repo.ts";
 
@@ -13,6 +13,7 @@ export const MODULES: Record<string, ModuleFactory> = {
     return quoteCapability(connector, options as QuoteOptions);
   },
   "order-draft": ({ drafts, options }) => orderDraftCapability(drafts, (options.holdDays as number | undefined) ?? 3),
+  "order-confirm": ({ drafts, options }) => orderConfirmCapability(drafts, (options.shipInDays as number | undefined) ?? 5),
 };
 
 export const disclosureKey = (capability: string) => `disclosure:${capability}`;

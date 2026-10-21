@@ -84,6 +84,8 @@ export interface GrantClaims extends Record<string, unknown> {
   apr: boolean;
   rorg: string;
   porg: string;
+  /** Present when a human approval backs this grant (commitments above the approval threshold). */
+  apv?: string;
   fld: string[];
   iat: number;
   exp: number;
@@ -156,4 +158,25 @@ export interface TaskResponse<B = unknown> {
 export interface TaskError {
   error: string;
   message: string;
+}
+
+export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "CHANGES_REQUESTED";
+
+/** A human decision on a commitment, made by a member of the requesting organization. */
+export interface Approval {
+  id: string;
+  orgId: string;
+  requesterAgentId: string;
+  providerAgentId: string;
+  capability: string;
+  reference: string;
+  amount: string;
+  currency: string;
+  summary: string | null;
+  status: ApprovalStatus;
+  requestedAt: string;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  comment: string | null;
+  used: boolean;
 }

@@ -1,6 +1,6 @@
 import { PlatformClient, type AgentCard, type AgentKeyPair } from "@pistiva/agent-sdk";
 import { createProviderGateway } from "@pistiva/gateway";
-import { ArrayInventory, orderDraftCapability, QUOTE_RESPONSE_FIELDS, quoteCapability, type InventoryItem } from "@pistiva/procurement";
+import { ArrayInventory, MemoryDraftStore, orderConfirmCapability, orderDraftCapability, QUOTE_RESPONSE_FIELDS, quoteCapability, type InventoryItem } from "@pistiva/procurement";
 import type { FastifyInstance } from "fastify";
 
 export { QUOTE_RESPONSE_FIELDS, type InventoryItem } from "@pistiva/procurement";
@@ -44,10 +44,18 @@ export async function startSupplier(cfg: SupplierConfig): Promise<{ app: Fastify
         description: "Hold a draft order against an accepted quote",
         price: { model: "per_task", amount: "0.00", currency: "INR" },
       },
+      {
+        name: "order.confirm",
+        version: 1,
+        description: "Commit a held draft order",
+        price: { model: "per_task", amount: "0.00", currency: "INR" },
+      },
     ],
     issuedAt: Math.floor(Date.now() / 1000),
   };
   await platform.publishCard(card);
+  // Drafts and confirmations share one store, so a confirm finds the draft it commits.
+  const drafts = new MemoryDraftStore();
   const app = createProviderGateway({
     agentId: cfg.agentId,
     kid: cfg.kid,
@@ -57,7 +65,8 @@ export async function startSupplier(cfg: SupplierConfig): Promise<{ app: Fastify
     description: `${cfg.name}: quotes and draft orders from our own inventory`,
     capabilities: {
       "quote.request": quoteCapability(new ArrayInventory(cfg.inventory), { priceFactorBps: cfg.priceFactorBps }),
-      "order.draft": orderDraftCapability(),
+      "order.draft": orderDraftCapability(drafts),
+      "order.confirm": orderConfirmCapability(drafts),
     },
     auditLogPath: cfg.auditLogPath,
   });
