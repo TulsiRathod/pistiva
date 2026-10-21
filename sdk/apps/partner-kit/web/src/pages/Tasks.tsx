@@ -141,7 +141,18 @@ function NewRequest({ api, info, onDone }: { api: NodeApi; info: NodeInfo; onDon
   const [capability] = useState(info.requests.includes("quote.request") ? "quote.request" : info.requests[0]!);
   const suppliers = useAsync(() => api.discover(capability), [api, capability]);
   const [picked, setPicked] = useState<string[]>([]);
-  const [form, setForm] = useState({ sku: "", qty: "1", budget: info.outbound.defaultBudget ?? "1000.00", currency: info.outbound.currency ?? "INR" });
+  const [form, setForm] = useState({ sku: "", qty: "1", specs: "", budget: info.outbound.defaultBudget ?? "1000.00", currency: info.outbound.currency ?? "INR" });
+  const ai = useAsync(() => api.ai(), [api]);
+  const [description, setDescription] = useState("");
+  const [drafted, setDrafted] = useState<{ missing: string[]; promptId: string } | undefined>();
+  const drafting = useAction();
+  async function draft() {
+    await drafting.run(async () => {
+      const out = await api.interpret(description);
+      setForm({ ...form, sku: out.request.sku, qty: String(out.request.qty || ""), specs: out.request.specs ?? "" });
+      setDrafted({ missing: out.missing, promptId: out.promptId });
+    });
+  }
   const [sent, setSent] = useState<string | undefined>();
   const action = useAction();
 
@@ -150,7 +161,7 @@ function NewRequest({ api, info, onDone }: { api: NodeApi; info: NodeInfo; onDon
     await action.run(async () => {
       const r = await api.startOutbound({
         capability,
-        request: { sku: form.sku.trim(), qty: Number(form.qty) },
+        request: { sku: form.sku.trim(), qty: Number(form.qty), ...(form.specs.trim() ? { specs: form.specs.trim() } : {}) },
         budget: form.budget,
         currency: form.currency,
         providerAgentIds: picked,
@@ -163,10 +174,34 @@ function NewRequest({ api, info, onDone }: { api: NodeApi; info: NodeInfo; onDon
   return (
     <form className="card stack" onSubmit={submit}>
       <h2>New quote request</h2>
-      <p className="muted">Only the SKU and quantity leave your node. The platform checks your budget and policy before any supplier sees the request.</p>
+      <p className="muted">Only the SKU, quantity and specs leave your node. The platform checks your budget and policy before any supplier sees the request.</p>
+      {ai.data?.llm && (
+        <div className="ai-draft">
+          <label>
+            Describe what you need <span className="muted">(drafted by {ai.data.llm}; you review before sending)</span>
+            <textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. forty thousand M8 hex nuts, zinc, by mid November" />
+          </label>
+          <div className="row">
+            <button type="button" className="btn btn-outline" disabled={drafting.busy || !description.trim()} onClick={draft}>
+              {drafting.busy ? "Drafting…" : "Fill the form from this"}
+            </button>
+            {drafted && (
+              <span className="muted">
+                Drafted with <code>{drafted.promptId}</code>
+                {drafted.missing.length > 0 && <> · please fill in: {drafted.missing.join(", ")}</>}
+              </span>
+            )}
+          </div>
+          {drafting.error && <p className="error">{drafting.error}</p>}
+        </div>
+      )}
       <label>
         SKU
         <input required pattern="[A-Za-z0-9._-]+" value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} placeholder="BOLT-M8-50" />
+      </label>
+      <label>
+        Specifications <span className="muted">(optional)</span>
+        <input maxLength={2000} value={form.specs} onChange={(e) => setForm({ ...form, specs: e.target.value })} placeholder="A2 stainless, DIN 933" />
       </label>
       <div className="row">
         <label className="grow">

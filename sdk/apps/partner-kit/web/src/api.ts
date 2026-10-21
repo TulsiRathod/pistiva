@@ -54,6 +54,7 @@ export interface Question {
   answer: string | null;
   status: string;
   createdAt: string;
+  suggestion?: { answer: string; rationale: string; confidence: "low" | "medium" | "high"; suspicious: boolean; promptId: string } | null;
   capability?: string;
   peerName?: string | null;
 }
@@ -101,6 +102,13 @@ export interface AuditEntry {
   createdAt: string;
 }
 
+export interface AiStatus {
+  llm: string | null;
+  rag: boolean;
+  specCheck: boolean;
+  usage: { promptId: string; provider: string; model: string; calls: number; inputTokens: number; outputTokens: number }[];
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -144,5 +152,7 @@ export class NodeApi {
   disclosure = () => this.call<Disclosure[]>("GET", "/ui/disclosure");
   setDisclosure = (capability: string, fields: string[]) => this.call<{ allowed: string[] }>("PUT", `/ui/disclosure/${encodeURIComponent(capability)}`, { fields });
   connectors = () => this.call<Connector[]>("GET", "/ui/connectors");
+  ai = () => this.call<AiStatus>("GET", "/ui/ai");
+  interpret = (text: string) => this.call<{ request: { sku: string; qty: number; uom?: string; deliverBy?: string; specs?: string }; missing: string[]; promptId: string }>("POST", "/ui/interpret", { text });
   audit = (limit = 100) => this.call<AuditEntry[]>("GET", `/ui/audit?limit=${limit}`);
 }

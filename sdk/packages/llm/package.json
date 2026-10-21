@@ -1,0 +1,20 @@
+{
+  "name": "@pistiva/llm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LLM router (Claude API, Ollama), versioned prompts, agent modules, RAG and evals for Pistiva agents",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.137.0",
+    "@pistiva/agent-sdk": "*",
+    "ajv": "^8.20.0"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^11.14.0",
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.1"
+  }
+}

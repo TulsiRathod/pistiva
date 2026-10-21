@@ -37,6 +37,14 @@ jobs:
       # Includes the Partner Kit integration tests (Testcontainers Postgres).
       - run: npm test
       - run: npm run build:web -w @pistiva/partner-kit
+      - run: npm run eval -- --self-test
+      # Evaluates the real model only when the repository has an Anthropic key configured.
+      - if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        run: npm run eval
+        env:
+          PISTIVA_LLM: anthropic
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
   console:
     runs-on: ubuntu-latest

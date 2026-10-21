@@ -70,7 +70,7 @@ describe("Partner Kit", { timeout: 120_000 }, () => {
   }
 
   beforeAll(async () => {
-    pg = await new PostgreSqlContainer("postgres:16-alpine").start();
+    pg = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
     platform = new FakePlatform();
     buyerAgent = platform.registerAgent();
     supplierAgent = platform.registerAgent();
@@ -141,7 +141,7 @@ describe("Partner Kit", { timeout: 120_000 }, () => {
     });
     await buyer.app.listen({ port: 0, host: "127.0.0.1" });
     buyerUrl = `http://127.0.0.1:${(buyer.app.server.address() as AddressInfo).port}`;
-  });
+  }, 180_000);
 
   afterAll(async () => {
     await buyer?.close();

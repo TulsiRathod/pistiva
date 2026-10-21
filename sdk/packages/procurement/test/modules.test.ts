@@ -1,7 +1,7 @@
 import type { GrantClaims } from "@pistiva/agent-sdk";
 import type { TaskContext } from "@pistiva/gateway";
 import { describe, expect, it } from "vitest";
-import { MemoryDraftStore, orderConfirmCapability, orderDraftCapability } from "../src/index.ts";
+import { ArrayInventory, MemoryDraftStore, orderConfirmCapability, orderDraftCapability, quoteCapability } from "../src/index.ts";
 
 function ctx(requester: string, grant: Partial<GrantClaims> = {}): TaskContext {
   return {
@@ -21,6 +21,37 @@ async function heldDraft(store: MemoryDraftStore, requester = "buyer") {
   };
   return r;
 }
+
+describe("quote.request clarifications from the AI hooks", () => {
+  const inventory = new ArrayInventory([
+    { sku: "BOLT-M8-50", name: "Hex bolt M8 x 50 mm, zinc", stockOnHand: 1000, listPrice: "4.20", costPrice: "2.65" },
+  ]);
+
+  it("offers similar catalog items for a SKU it doesn't stock, then quotes the one chosen", async () => {
+    const quote = quoteCapability(inventory, { catalog: async () => [{ sku: "BOLT-M8-50", name: "Hex bolt M8 x 50 mm, zinc" }] });
+    const c = ctx("buyer");
+    const first = await quote.start!({ sku: "M8-BOLT", qty: 10 }, c);
+    expect(first).toMatchObject({ state: "input-required", clarification: { field: "sku", options: ["BOLT-M8-50", "none of these"] } });
+    expect(await quote.resume!({ answer: "BOLT-M8-50" }, c)).toMatchObject({ state: "completed", result: { sku: "BOLT-M8-50", qty: 10 } });
+  });
+
+  it("asks before quoting an item that conflicts with the buyer's specs", async () => {
+    const quote = quoteCapability(inventory, { specCheck: async () => ({ matches: false, concern: "It is zinc plated, not stainless." }) });
+    const c = ctx("buyer");
+    const first = await quote.start!({ sku: "BOLT-M8-50", qty: 10, specs: "A2 stainless" }, c);
+    expect(first).toMatchObject({ state: "input-required", clarification: { options: ["quote as is", "cancel"] } });
+    expect(await quote.resume!({ answer: "quote as is" }, c)).toMatchObject({ state: "completed" });
+
+    const c2 = ctx("buyer");
+    await quote.start!({ sku: "BOLT-M8-50", qty: 10, specs: "A2 stainless" }, c2);
+    expect(await quote.resume!({ answer: "cancel" }, c2)).toMatchObject({ state: "rejected" });
+  });
+
+  it("quotes normally when the AI hook fails", async () => {
+    const quote = quoteCapability(inventory, { specCheck: async () => { throw new Error("model down"); } });
+    expect(await quote.start!({ sku: "BOLT-M8-50", qty: 10, specs: "zinc" }, ctx("buyer"))).toMatchObject({ state: "completed" });
+  });
+});
 
 describe("order.confirm", () => {
   it("confirms a held draft once, within the grant's budget", async () => {

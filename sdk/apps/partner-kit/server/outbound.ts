@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { A2AClient, ContractRegistry, PlatformError, singleDataPart, type AgentKeyPair, type Clarification, type DiscoveredAgent, type OutboundRound, type PlatformClient } from "@pistiva/agent-sdk";
+import type { Suggestion } from "@pistiva/llm";
 import type { KitRepo } from "./repo.ts";
 
 /** How long an operator has to answer a supplier's question before the task is canceled. */
@@ -46,7 +47,15 @@ export class OutboundService {
   private readonly running = new Set<Promise<unknown>>();
   private readonly contracts: ContractRegistry;
 
-  constructor(private readonly deps: { platform: PlatformClient; keys: AgentKeyPair; repo: KitRepo }) {
+  constructor(
+    private readonly deps: {
+      platform: PlatformClient;
+      keys: AgentKeyPair;
+      repo: KitRepo;
+      /** Drafts an answer for the operator; never sent without them. */
+      suggest?: (input: { request: Record<string, unknown>; question: string; options?: string[] }) => Promise<Suggestion | undefined>;
+    },
+  ) {
     this.contracts = new ContractRegistry(deps.platform);
   }
 
@@ -100,7 +109,7 @@ export class OutboundService {
         req.capability,
         req.request,
         { budget: req.budget, currency: req.currency, approvalId },
-        (c, ctx) => this.ask(c, ctx),
+        (c, ctx) => this.ask(c, ctx, req.request),
       );
       await this.deps.repo.upsertTask({
         id: outcome.taskId,
@@ -146,8 +155,15 @@ export class OutboundService {
     while (this.running.size) await Promise.allSettled([...this.running]);
   }
 
-  private async ask(c: Clarification, ctx: { taskId: string; round: number }): Promise<{ answer: string } | null> {
+  private async ask(c: Clarification, ctx: { taskId: string; round: number }, request: Record<string, unknown>): Promise<{ answer: string } | null> {
     const id = await this.deps.repo.openQuestion(ctx.taskId, ctx.round, c);
+    // The suggestion is computed in the background; the question is visible to the operator at once.
+    if (this.deps.suggest) {
+      void this.deps
+        .suggest({ request, question: c.question, options: c.options })
+        .then((s) => s && this.deps.repo.setSuggestion(id, s))
+        .catch(() => undefined);
+    }
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.waiters.delete(id);

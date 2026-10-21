@@ -5,6 +5,7 @@ import { useAsync } from "../useAsync.ts";
 export function Overview({ api, info, go }: { api: NodeApi; info: NodeInfo; go: (t: Tab) => void }) {
   const recent = useAsync(() => api.tasks(), [api, info.counts.inbound, info.counts.outbound]);
   const connectors = useAsync(() => api.connectors(), [api]);
+  const ai = useAsync(() => api.ai(), [api]);
   const tiles: [string, number, string, Tab][] = [
     ["Requests received", info.counts.inbound, "answered from your own systems", "inbox"],
     ["Requests sent", info.counts.outbound, "to suppliers' agents", "outbox"],
@@ -67,6 +68,22 @@ export function Overview({ api, info, go }: { api: NodeApi; info: NodeInfo; go: 
             ))}
             {connectors.data?.length === 0 && <li className="muted">No connectors configured.</li>}
           </ul>
+          <h3>AI assistance</h3>
+          {ai.data && (
+            <dl>
+              <dt>Model</dt>
+              <dd>{ai.data.llm ?? <span className="muted">none (rules only)</span>}</dd>
+              <dt>Catalog search</dt>
+              <dd>{ai.data.rag ? "on" : <span className="muted">off</span>}</dd>
+              <dt>Spec checks</dt>
+              <dd>{ai.data.specCheck ? "on" : <span className="muted">off</span>}</dd>
+              <dt>Model calls</dt>
+              <dd>
+                {ai.data.usage.reduce((n, u) => n + u.calls, 0)}{" "}
+                <span className="muted">({ai.data.usage.reduce((n, u) => n + u.inputTokens + u.outputTokens, 0)} tokens)</span>
+              </dd>
+            </dl>
+          )}
         </section>
       </div>
     </>

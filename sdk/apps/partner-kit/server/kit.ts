@@ -3,10 +3,12 @@ import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
 import { ContractRegistry, singleDataPart, type AgentCard, type AgentKeyPair, type PlatformClient } from "@pistiva/agent-sdk";
 import { createProviderGateway, type RoundRecord } from "@pistiva/gateway";
+import type { LlmProvider } from "@pistiva/llm";
 import type { InventoryConnector } from "@pistiva/procurement";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { OperatorAuth } from "./auth.ts";
 import type { KitConfig } from "./config.ts";
+import { NodeAi } from "./ai.ts";
 import { CommitmentService } from "./commitments.ts";
 import { buildConnector, McpInventory } from "./connectors.ts";
 import { migrate, type Db } from "./db.ts";
@@ -27,6 +29,8 @@ export interface KitDeps {
   sessionSecret?: string;
   /** Publish the signed agent card on start (off in tests that use a fake platform). */
   publishCard?: boolean;
+  /** Overrides the model from agents.yaml (tests, or a provider built elsewhere). */
+  llmProvider?: LlmProvider;
   /** How often to check approvals the node is waiting on (default 5 s). */
   approvalPollMs?: number;
   /** Directory of the built operator UI; served when present. */
@@ -56,7 +60,10 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
   const contracts = new ContractRegistry(platform);
   const connectors: Record<string, InventoryConnector> = Object.fromEntries(Object.entries(cfg.connectors).map(([n, c]) => [n, buildConnector(c)]));
   const versionOf = (capability: string) => cfg.provides[capability]?.version ?? 1;
-  const { handlers, disclosure } = await buildCapabilities(cfg, { connectors, drafts: new PgDraftStore(db), repo, contracts, versionOf });
+  const ai = new NodeAi(cfg.ai ?? {}, { db, contracts, provider: deps.llmProvider });
+  const { handlers, disclosure } = await buildCapabilities(cfg, { connectors, drafts: new PgDraftStore(db), repo, contracts, versionOf, hooks: ai.quoteHooks() });
+  // Index the catalog for "did you mean" lookups. A failure here only disables search, never the node.
+  if (ai.index) await ai.reindex(connectors).catch((e: Error) => console.warn(`Catalog indexing failed: ${e.message}`));
 
   const card: AgentCard = {
     agentId: deps.agentId,
@@ -79,7 +86,7 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
   // Questions asked of us before a restart can no longer be answered: their waiting task is gone.
   await db.query("UPDATE kit_questions SET status = 'expired', resolved_at = now() WHERE status = 'open'");
 
-  const outbound = new OutboundService({ platform, keys: deps.keys, repo });
+  const outbound = new OutboundService({ platform, keys: deps.keys, repo, suggest: (input) => ai.suggest(input) });
   const commitments = new CommitmentService({ db, repo, outbound, platform, pollMs: deps.approvalPollMs });
   commitments.start();
   const app = createProviderGateway({
@@ -98,7 +105,7 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
     onCountersigned: (signed) => repo.saveReceipt(signed.receipt.taskId, signed, { countersigned: true }),
   });
 
-  registerOperatorApi(app, { repo, outbound, commitments, cfg, contracts, disclosure, connectors, versionOf, auth: new OperatorAuth(deps.adminPassword, deps.sessionSecret), deps });
+  registerOperatorApi(app, { repo, outbound, commitments, ai, cfg, contracts, disclosure, connectors, versionOf, auth: new OperatorAuth(deps.adminPassword, deps.sessionSecret), deps });
 
   const webDir = deps.webDir ?? DEFAULT_WEB_DIR;
   if (existsSync(webDir)) {
@@ -154,6 +161,7 @@ function registerOperatorApi(
     repo: KitRepo;
     outbound: OutboundService;
     commitments: CommitmentService;
+    ai: NodeAi;
     cfg: KitConfig;
     contracts: ContractRegistry;
     disclosure: Map<string, string[]>;
@@ -260,6 +268,21 @@ function registerOperatorApi(
   app.get("/ui/connectors", async () =>
     Promise.all(Object.entries(ctx.connectors).map(async ([name, c]) => ({ name, kind: c.kind, ...(await c.health()) }))),
   );
+
+  app.get("/ui/ai", async () => ({ ...ctx.ai.enabled, usage: await ctx.ai.usage() }));
+
+  app.post("/ui/ai/reindex", async () => ({ indexed: await ctx.ai.reindex(ctx.connectors) }));
+
+  /** Drafts a quote.request from a description. The operator reviews it; nothing is sent from here. */
+  app.post("/ui/interpret", async (req, reply) => {
+    const text = (req.body as { text?: string })?.text?.trim();
+    if (!text) return reply.code(400).send({ error: "bad_request", message: "Describe what you need" });
+    try {
+      return await ctx.ai.interpret(text.slice(0, 2000));
+    } catch (e) {
+      return reply.code(422).send({ error: "interpretation_failed", message: (e as Error).message });
+    }
+  });
 
   app.get("/ui/audit", async (req) => repo.audit(Math.min(Number((req.query as { limit?: string }).limit ?? 100), 500)));
 }

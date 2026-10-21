@@ -51,6 +51,8 @@ export interface KitQuestion {
   answer: string | null;
   status: "open" | "answered" | "declined" | "expired";
   createdAt: string;
+  /** A model's suggested answer, for the operator to accept or ignore. */
+  suggestion?: { answer: string; rationale: string; confidence: string; suspicious: boolean; promptId: string } | null;
   capability?: string;
   peerName?: string | null;
 }
@@ -151,6 +153,10 @@ export class KitRepo {
     return rows[0] ? this.toQuestion(rows[0]) : undefined;
   }
 
+  async setSuggestion(id: number, suggestion: unknown): Promise<void> {
+    await this.db.query("UPDATE kit_questions SET suggestion = $2 WHERE id = $1", [id, JSON.stringify(suggestion)]);
+  }
+
   async questions(status: KitQuestion["status"] | "all" = "open"): Promise<KitQuestion[]> {
     const { rows } = await this.db.query(
       `SELECT q.*, t.capability, t.peer_name FROM kit_questions q JOIN kit_tasks t ON t.id = q.task_id
@@ -161,7 +167,7 @@ export class KitRepo {
   }
 
   private toQuestion(r: Record<string, any>): KitQuestion {
-    return { id: Number(r.id), taskId: r.task_id, round: r.round, question: r.question, answer: r.answer, status: r.status, createdAt: iso(r.created_at) };
+    return { id: Number(r.id), taskId: r.task_id, round: r.round, question: r.question, answer: r.answer, status: r.status, suggestion: r.suggestion ?? null, createdAt: iso(r.created_at) };
   }
 
   async getSetting<T>(key: string): Promise<T | undefined> {

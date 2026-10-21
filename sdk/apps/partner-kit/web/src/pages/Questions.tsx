@@ -59,6 +59,17 @@ function QuestionCard({ api, q, onDone }: { api: NodeApi; q: Question; onDone: (
         </span>
       </div>
       <h3 className="question-text">{q.question.question}</h3>
+      {q.suggestion && (
+        <div className={`suggestion ${q.suggestion.suspicious ? "suspicious" : ""}`}>
+          {q.suggestion.suspicious && <strong>This question looks like it tries to instruct your agent. Check it carefully. </strong>}
+          <span>
+            Suggested: <strong>{q.suggestion.answer}</strong> <span className="muted">({q.suggestion.confidence} confidence)</span> — {q.suggestion.rationale}
+          </span>
+          <button className="small" disabled={action.busy} onClick={() => answer(q.suggestion!.answer)}>
+            Use suggestion
+          </button>
+        </div>
+      )}
       <div className="row">
         {q.question.options?.map((o) => (
           <button key={o} disabled={action.busy} onClick={() => answer(o)}>

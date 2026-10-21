@@ -35,3 +35,13 @@ requests:
 outbound:
   currency: INR
   defaultBudget: "5000.00"
+# Optional AI layer. Models only draft and ask; fixed rules and people decide.
+ai:
+  llm:
+    provider: none             # anthropic | ollama | none
+    # model: claude-opus-5-5   # anthropic: uses ANTHROPIC_API_KEY or an `ant auth login` profile
+    # model: qwen2.5:7b-instruct  # ollama: everything stays on your machines
+  preferences: Prefer the full quantity even if it ships later.
+  rag:
+    embedder: hash             # hash (no model) | ollama (nomic-embed-text)
+  specCheck: false             # supplier side: ask before quoting items that conflict with a buyer's specs

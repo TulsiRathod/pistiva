@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { parse } from "yaml";
+import type { AiConfig } from "./ai.ts";
 
 /** One inventory source. Paths are resolved relative to the agents.yaml file. */
 export type ConnectorConfig =
@@ -30,6 +31,8 @@ export interface KitConfig {
   requests: string[];
   /** Default spending limits for outbound requests; the platform policy still has the final say. */
   outbound?: { currency?: string; defaultBudget?: string };
+  /** Optional AI layer: language model, answer preferences, catalog search, spec checks. */
+  ai?: AiConfig;
 }
 
 export interface KitEnv {
@@ -89,5 +92,6 @@ export async function loadConfig(path: string): Promise<KitConfig> {
     provides: raw.provides ?? {},
     requests: raw.requests ?? [],
     outbound: raw.outbound,
+    ai: raw.ai,
   };
 }

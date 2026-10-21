@@ -8,3 +8,4 @@ platform/data/
 .idea/
 .vscode/
 *.jsonl
+eval-report.json

@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 export interface InventoryItem {
   sku: string;
   name: string;
+  /** Public description; the only item text an AI module may see. */
+  description?: string;
   stockOnHand: number;
   listPrice: string;
   costPrice?: string;
@@ -18,6 +20,8 @@ export interface InventoryItem {
 export interface InventoryConnector {
   readonly kind: string;
   find(sku: string): Promise<InventoryItem | undefined>;
+  /** All items, for building the node's search index. Optional: some systems only support lookups. */
+  list?(): Promise<InventoryItem[]>;
   /** Cheap reachability check for the operator UI. */
   health(): Promise<{ ok: boolean; items?: number; detail?: string }>;
 }
@@ -29,6 +33,10 @@ export class ArrayInventory implements InventoryConnector {
 
   async find(sku: string) {
     return this.items.find((i) => i.sku === sku);
+  }
+
+  async list() {
+    return [...this.items];
   }
 
   async health() {
@@ -50,6 +58,10 @@ export class JsonFileInventory implements InventoryConnector {
 
   async find(sku: string) {
     return (await this.load()).find((i) => i.sku === sku);
+  }
+
+  async list() {
+    return this.load();
   }
 
   async health() {
@@ -92,6 +104,10 @@ export class CsvFileInventory implements InventoryConnector {
 
   async find(sku: string) {
     return (await this.load()).find((i) => i.sku === sku);
+  }
+
+  async list() {
+    return this.load();
   }
 
   async health() {

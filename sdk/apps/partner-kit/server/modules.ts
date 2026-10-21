@@ -5,12 +5,15 @@ import type { KitConfig } from "./config.ts";
 import type { KitRepo } from "./repo.ts";
 
 /** Built-in agent modules, by the name agents.yaml refers to them. */
-type ModuleFactory = (ctx: { connector?: InventoryConnector; options: Record<string, unknown>; drafts: DraftStore }) => CapabilityHandler;
+/** Optional AI hooks a module may use; every one of them only ever leads to a question. */
+export type QuoteHooks = Pick<QuoteOptions, "catalog" | "specCheck">;
+
+type ModuleFactory = (ctx: { connector?: InventoryConnector; options: Record<string, unknown>; drafts: DraftStore; hooks: QuoteHooks }) => CapabilityHandler;
 
 export const MODULES: Record<string, ModuleFactory> = {
-  "inventory-quote": ({ connector, options }) => {
+  "inventory-quote": ({ connector, options, hooks }) => {
     if (!connector) throw new Error("inventory-quote needs a connector");
-    return quoteCapability(connector, options as QuoteOptions);
+    return quoteCapability(connector, { ...(options as QuoteOptions), ...hooks });
   },
   "order-draft": ({ drafts, options }) => orderDraftCapability(drafts, (options.holdDays as number | undefined) ?? 3),
   "order-confirm": ({ drafts, options }) => orderConfirmCapability(drafts, (options.shipInDays as number | undefined) ?? 5),
@@ -25,14 +28,21 @@ export const disclosureKey = (capability: string) => `disclosure:${capability}`;
  */
 export async function buildCapabilities(
   cfg: KitConfig,
-  deps: { connectors: Record<string, InventoryConnector>; drafts: DraftStore; repo: KitRepo; contracts: ContractRegistry; versionOf: (capability: string) => number },
+  deps: {
+    connectors: Record<string, InventoryConnector>;
+    drafts: DraftStore;
+    repo: KitRepo;
+    contracts: ContractRegistry;
+    versionOf: (capability: string) => number;
+    hooks?: QuoteHooks;
+  },
 ): Promise<{ handlers: Record<string, CapabilityHandler>; disclosure: Map<string, string[]> }> {
   const handlers: Record<string, CapabilityHandler> = {};
   const disclosure = new Map<string, string[]>();
   for (const [capability, p] of Object.entries(cfg.provides)) {
     const factory = MODULES[p.module];
     if (!factory) throw new Error(`Unknown module ${p.module} for ${capability}; available: ${Object.keys(MODULES).join(", ")}`);
-    const handler = factory({ connector: p.connector ? deps.connectors[p.connector] : undefined, options: p.options ?? {}, drafts: deps.drafts });
+    const handler = factory({ connector: p.connector ? deps.connectors[p.connector] : undefined, options: p.options ?? {}, drafts: deps.drafts, hooks: deps.hooks ?? {} });
     const contractFields = await deps.contracts.resultFields(capability, deps.versionOf(capability));
     const saved = await deps.repo.getSetting<string[]>(disclosureKey(capability));
     const initial = (saved ?? handler.responseFields ?? contractFields).filter((f) => contractFields.includes(f));

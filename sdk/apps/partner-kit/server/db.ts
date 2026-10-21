@@ -109,6 +109,23 @@ const MIGRATIONS: { version: number; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 3,
+    sql: `
+      -- Model calls made by this node, for cost reports (nothing about their content).
+      CREATE TABLE kit_llm_usage (
+        id            BIGSERIAL PRIMARY KEY,
+        provider      TEXT NOT NULL,
+        model         TEXT NOT NULL,
+        prompt_id     TEXT,
+        input_tokens  INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        latency_ms    INTEGER NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      ALTER TABLE kit_questions ADD COLUMN suggestion JSONB;
+    `,
+  },
 ];
 
 export type Db = pg.Pool;

@@ -19,13 +19,14 @@ sdk/        TypeScript workspace
   packages/gateway     provider gateway (Fastify): A2A JSON-RPC + agent card, contract validation,
                        replay/idempotency, local allowlist, per-round signed receipts
   packages/procurement procurement modules (quote.request, order.draft, order.confirm) and inventory connectors
+  packages/llm         LLM router (Claude API, Ollama), versioned prompts, agent modules, hybrid RAG, evals
   apps/partner-kit     the self-hosted node per business: gateway + outbox + operator UI + own Postgres
   examples/            supplier-agent (quotes from a private inventory), buyer-agent (compare + decide)
   scripts/demo.ts      end-to-end demo with pass/fail checks; scripts/nodes.ts runs two live nodes
 console/    React + Vite console: landing page, org verification, agents and keys, kill switch, approvals,
             policy, audit, platform admin dashboard
 infra/      docker-compose for the whole stack
-docs/adr/   architecture decisions 001–007
+docs/adr/   architecture decisions 001–008
 ```
 
 ## Run it
@@ -53,6 +54,7 @@ The default platform admin is `admin@pistiva.local` / `change-me-admin`. Overrid
 | `cd platform && mvn verify` | Crypto vectors shared with the SDK, plus Testcontainers flow tests: discovery filters unverified orgs, a bad card signature is rejected, out-of-scope and over-budget grants are denied and audited, the approval flag is set above the threshold, a suspended agent or revoked key is blocked, assertion replay is rejected, a receipt needs both valid signatures. Also: the domain pack is registered, published contracts are immutable, cards must name registered versions, grants pin the version and continue without a budget increase, and receipts are recorded per round until the task is terminal |
 | `cd sdk && npm test` | Legacy route: bad signature, replay, expired or wrongly addressed grant, out-of-scope capability, revoked key, suspended requester, field allowlist, idempotent retry. A2A: agent card with signed pistiva-trust card, single-round and clarification tasks with per-round receipts, cancel and owner-only `tasks/get`, missing extension, contract violations in and out, cached retries, version pinning |
 | `cd sdk && npm run demo` | Live end-to-end run against the platform. Exits non-zero if any check fails |
+| `cd sdk && npm run eval -- --self-test` | Agent-module golden set (including prompt-injection cases) through the graders, without a model. `PISTIVA_LLM=anthropic` or `PISTIVA_LLM=ollama` evaluates a real model |
 | `cd sdk && npm run nodes -- --check` | Two live Partner Kit nodes against the platform: a quote with a clarification answered through the operator API, countersigned receipts, withheld fields recorded |
 
 ## Registering your own agent
@@ -81,6 +83,14 @@ AGENT_ID=… ORG_ID=… KEY_PASSPHRASE=… KIT_ADMIN_PASSWORD=… PUBLIC_URL=htt
 
 To try it locally against your local platform, run `cd sdk && npm run nodes`. It starts a supplier node on :9301 and a buyer node on :9302 (operator password `operator-password`).
 
+## AI assistance
+
+Each node can turn on an AI layer in `agents.yaml`, using the Claude API, a local Ollama model, or none. See [ADR 008](docs/adr/008-ai-layer.md).
+- **Buyer side:** turns a description into a quote request for the operator to review, and suggests answers to suppliers' questions.
+- **Supplier side:** offers "did you mean…" alternatives from its own catalog (hybrid pgvector search), and asks before quoting items that conflict with a buyer's specs.
+
+Models only draft and ask. Grants, contracts and disclosure rules decide everything, so turning AI on never changes what can be committed or disclosed.
+
 ## Human approvals
 
 A purchase above your organization's approval threshold can't be committed until a person approves it. See [ADR 007](docs/adr/007-human-approvals.md).
@@ -96,7 +106,6 @@ A purchase above your organization's approval threshold can't be committed until
 
 ## Not in this milestone
 
-- LLM agent modules (M2.4)
 - WebRTC direct connections with TURN relay fallback
 - Usage metering and payouts
 - KMS/HSM key custody

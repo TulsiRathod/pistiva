@@ -12,7 +12,8 @@
     "test": "vitest run",
     "demo": "tsx scripts/demo.ts",
     "keygen": "tsx scripts/keygen.ts",
-    "nodes": "tsx scripts/nodes.ts"
+    "nodes": "tsx scripts/nodes.ts",
+    "eval": "tsx scripts/eval.ts"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
