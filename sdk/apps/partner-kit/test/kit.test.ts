@@ -99,6 +99,7 @@ describe("Partner Kit", { timeout: 120_000 }, () => {
       publicUrl: "http://placeholder",
       adminPassword: PASSWORD,
       publishCard: false,
+      metricsToken: "scrape-me",
     });
     await supplier.app.listen({ port: 0, host: "127.0.0.1" });
     supplierUrl = `http://127.0.0.1:${(supplier.app.server.address() as AddressInfo).port}`;
@@ -138,6 +139,7 @@ describe("Partner Kit", { timeout: 120_000 }, () => {
       publicUrl: "http://placeholder",
       adminPassword: PASSWORD,
       publishCard: false,
+      metricsToken: "scrape-me",
     });
     await buyer.app.listen({ port: 0, host: "127.0.0.1" });
     buyerUrl = `http://127.0.0.1:${(buyer.app.server.address() as AddressInfo).port}`;
@@ -149,7 +151,7 @@ describe("Partner Kit", { timeout: 120_000 }, () => {
     await buyerDb?.end();
     await supplierDb?.end();
     await pg?.stop();
-  });
+  }, 60_000);
 
   it("requires an operator session for the node's API", async () => {
     expect((await fetch(`${buyerUrl}/ui/tasks`)).status).toBe(401);
@@ -190,6 +192,33 @@ describe("Partner Kit", { timeout: 120_000 }, () => {
     const result = sDetail.messages.find((m) => m.sender === "us" && m.kind === "result")!;
     expect(result.withheld).toEqual(expect.arrayContaining(["costPrice", "warehouse", "supplierNotes", "stockOnHand"]));
     expect(await eventually(async () => (sDetail.receipts.every((r) => r.countersigned) ? true : undefined))).toBe(true);
+  });
+
+  it("exposes the node's measures to its own Prometheus, with no ids or values", async () => {
+    // An unsigned message is refused and counted as blocked.
+    await fetch(`${supplierUrl}/a2a`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "message/send", params: { message: { kind: "message", messageId: "m", role: "user", parts: [] } } }),
+    });
+    expect((await fetch(`${supplierUrl}/metrics`)).status).toBe(401);
+    expect((await fetch(`${supplierUrl}/metrics`, { headers: { Authorization: "Bearer wrong-token" } })).status).toBe(401);
+    const scrape = async (url: string) => (await fetch(`${url}/metrics`, { headers: { Authorization: "Bearer scrape-me" } })).text();
+
+    const supplierMetrics = await scrape(supplierUrl);
+    expect(supplierMetrics).toContain('pistiva_kit_tasks_finished_total{direction="inbound",capability="quote.request",state="completed"} 1');
+    expect(supplierMetrics).toMatch(/pistiva_kit_fields_total\{capability="quote.request",disposition="withheld"\} [1-9]/);
+    expect(supplierMetrics).toMatch(/pistiva_kit_requests_rejected_total\{reason="[a-z_]+"\} 1/);
+    expect(supplierMetrics).toContain('pistiva_kit_task_duration_seconds_count{direction="inbound",capability="quote.request",state="completed"} 1');
+
+    const buyerMetrics = await scrape(buyerUrl);
+    expect(buyerMetrics).toContain('pistiva_kit_tasks_finished_total{direction="outbound",capability="quote.request",state="completed"} 1');
+    expect(buyerMetrics).toContain('pistiva_kit_connections_total{connection="direct"} 1');
+    expect(buyerMetrics).toContain("pistiva_kit_open_questions 0");
+    for (const text of [supplierMetrics, buyerMetrics]) {
+      expect(text).not.toContain(supplierAgent.agentId);
+      expect(text).not.toContain("NUT-M8");
+    }
   });
 
   it("applies an operator's narrower disclosure to the next quote", async () => {

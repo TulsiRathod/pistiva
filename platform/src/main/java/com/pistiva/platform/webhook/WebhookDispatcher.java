@@ -2,6 +2,7 @@ package com.pistiva.platform.webhook;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.pistiva.platform.observability.PlatformMetrics;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -33,10 +34,12 @@ public class WebhookDispatcher {
     private static final Logger log = LoggerFactory.getLogger(WebhookDispatcher.class);
 
     private final JdbcTemplate jdbc;
+    private final PlatformMetrics metrics;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).followRedirects(HttpClient.Redirect.NEVER).build();
 
-    public WebhookDispatcher(JdbcTemplate jdbc) {
+    public WebhookDispatcher(JdbcTemplate jdbc, PlatformMetrics metrics) {
         this.jdbc = jdbc;
+        this.metrics = metrics;
     }
 
     @Scheduled(fixedDelayString = "${pistiva.webhooks.dispatch-interval:5s}", initialDelayString = "${pistiva.webhooks.dispatch-interval:5s}")
@@ -84,7 +87,9 @@ public class WebhookDispatcher {
         } catch (Exception e) {
             error = e.getClass().getSimpleName() + ": " + e.getMessage();
         }
-        if (status != null && status >= 200 && status < 300) {
+        boolean delivered = status != null && status >= 200 && status < 300;
+        metrics.webhookDelivery(delivered);
+        if (delivered) {
             jdbc.update("UPDATE outbox_events SET delivered_at = now(), attempts = attempts + 1, last_status = ?, last_error = NULL WHERE id = ?", status, id);
             return;
         }

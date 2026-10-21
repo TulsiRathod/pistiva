@@ -33,6 +33,8 @@ import {
 import type { FastifyInstance } from "fastify";
 import { TaskRejection, type GatewayCore, type HandlerOutcome, type TaskContext } from "./gateway.ts";
 import type { StoredTask } from "./stores.ts";
+import { SpanStatusCode, type Span } from "@opentelemetry/api";
+import { annotate, inSpan, SpanAttr } from "./telemetry.ts";
 
 class RpcFailure extends Error {
   constructor(
@@ -84,8 +86,17 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
     if (!rpc || rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
       return { jsonrpc: "2.0", id, error: { code: RpcErrors.invalidRequest, message: "Not a JSON-RPC 2.0 request" } };
     }
+    return inSpan(`pistiva.a2a ${rpc.method}`, { [SpanAttr.rpcMethod]: rpc.method }, (span) => dispatch(rpc, id, req.headers.authorization, span));
+  });
+
+  async function dispatch(
+    rpc: JsonRpcRequest<Record<string, unknown>>,
+    id: JsonRpcRequest["id"],
+    authorization: string | undefined,
+    span: Span,
+  ) {
     try {
-      const auth = req.headers.authorization;
+      const auth = authorization;
       switch (rpc.method) {
         case "message/send":
           return { jsonrpc: "2.0", id, result: await sendMessage(rpc.params?.message as A2AMessage) };
@@ -101,10 +112,14 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
       }
     } catch (e) {
       const error = toRpcError(e);
-      await core.audit.write("a2a.rejected", { method: rpc.method, code: error.code, message: error.message });
+      const reason =
+        (error.data as { reason?: string } | undefined)?.reason ?? Object.entries(RpcErrors).find(([, c]) => c === error.code)?.[0] ?? String(error.code);
+      span.setAttribute(SpanAttr.rejection, reason);
+      span.setStatus({ code: SpanStatusCode.ERROR, message: reason });
+      await core.audit.write("a2a.rejected", { method: rpc.method, code: error.code, reason, message: error.message });
       return { jsonrpc: "2.0", id, error };
     }
-  });
+  }
 
   async function sendMessage(message: A2AMessage): Promise<A2ATask> {
     if (!message || message.kind !== "message" || !Array.isArray(message.parts)) {
@@ -112,8 +127,10 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
     }
     const envelope = messageEnvelope(message);
     if (!envelope) throw new RpcFailure(RpcErrors.unauthorized, `Messages must carry the ${PISTIVA_TRUST_EXTENSION} extension`);
+    annotate({ [SpanAttr.taskId]: envelope.header.taskId, [SpanAttr.round]: envelope.header.round ?? 1, [SpanAttr.kind]: envelope.header.kind ?? "request" });
     const { grant, requesterOrgId } = await core.authorize(envelope);
     const h = envelope.header;
+    annotate({ [SpanAttr.capability]: h.capability, [SpanAttr.requesterAgent]: h.from });
 
     const key = `${h.from}:${h.taskId}:${h.idempotencyKey}`;
     const bodyHash = responseHash(envelope.body);
@@ -223,6 +240,11 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
     };
     Object.assign(stored, { round, state, task });
     await tasks.save(stored);
+    annotate({
+      [SpanAttr.state]: state,
+      [SpanAttr.fieldsDisclosed]: state === "completed" ? Object.keys((parts[0] as { data?: object }).data ?? {}).length : 0,
+      [SpanAttr.fieldsWithheld]: withheld.length,
+    });
     await core.audit.write(`a2a.round.${state}`, {
       taskId: h.taskId,
       round,

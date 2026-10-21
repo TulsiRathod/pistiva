@@ -15,6 +15,7 @@ import com.pistiva.platform.audit.AuditService;
 import com.pistiva.platform.certification.CertificationService;
 import com.pistiva.platform.common.ApiException;
 import com.pistiva.platform.identity.PlatformKeyService;
+import com.pistiva.platform.observability.PlatformMetrics;
 import com.pistiva.platform.org.Organization;
 import com.pistiva.platform.org.OrganizationRepository;
 import com.pistiva.platform.policy.PolicyRules;
@@ -55,12 +56,13 @@ public class GrantService {
     private final ApprovalRepository approvals;
     private final ObjectMapper mapper;
     private final CertificationService certifications;
+    private final PlatformMetrics metrics;
 
     public GrantService(AgentRepository agents, AgentCardRepository cards, OrganizationRepository orgs,
                         PolicyService policies, RateLimiter rateLimiter, TaskGrantRepository grants,
                         PlatformKeyService platformKeys, PlatformProperties props, AuditService audit,
                         TaskTypeService taskTypes, ApprovalRepository approvals, ObjectMapper mapper,
-                        CertificationService certifications) {
+                        CertificationService certifications, PlatformMetrics metrics) {
         this.agents = agents;
         this.cards = cards;
         this.orgs = orgs;
@@ -74,6 +76,7 @@ public class GrantService {
         this.approvals = approvals;
         this.mapper = mapper;
         this.certifications = certifications;
+        this.metrics = metrics;
     }
 
     /**
@@ -91,6 +94,7 @@ public class GrantService {
         TaskGrant previous = req.continueTaskId() == null ? null
                 : grants.findFirstByTaskIdOrderByCreatedAtDesc(req.continueTaskId()).orElse(null);
         UUID taskId = req.continueTaskId() == null ? UUID.randomUUID() : req.continueTaskId();
+        metrics.tagTask(taskId);
         Agent provider = agents.findById(req.providerAgentId()).orElse(null);
         UUID providerOrgId = provider == null ? null : provider.getOrgId();
         Decision decision = new Decision(taskId, requester, providerOrgId, req);
@@ -199,6 +203,7 @@ public class GrantService {
                 null, null, Map.of("jti", grant.getJti(), "capability", req.capability() + "@" + taskTypeVersion,
                         "budget", req.budget().toPlainString(), "approvalRequired", approvalRequired,
                         "approvalId", approval == null ? "" : approval.getId().toString()));
+        metrics.grant(req.capability(), true);
         return new IssuedGrant(taskId, grant.getJti(), platformKeys.sign(GRANT_TYP, claims), expiresAt, approvalRequired);
     }
 
@@ -261,6 +266,7 @@ public class GrantService {
             details.put("budget", req.budget().toPlainString());
             audit.record(taskId, "GRANT_DENIED", "agent:" + requester.agentId(), requester.orgId(), providerOrgId,
                     null, null, details);
+            metrics.grant(req.capability(), false);
             return new ApiException.PolicyDenied(reason);
         }
     }

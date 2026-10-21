@@ -37,6 +37,12 @@ services:
         generateValue: true
       - key: PISTIVA_CORS_ORIGINS
         value: https://pistiva.vercel.app
+      # Bearer token for /actuator/prometheus; without it the endpoint stays closed.
+      - key: PISTIVA_METRICS_TOKEN
+        generateValue: true
+      # No trace collector on the free plan; set MANAGEMENT_OTLP_TRACING_ENDPOINT and raise this to export traces.
+      - key: PISTIVA_TRACE_SAMPLING
+        value: "0.0"
       # The free instance has 512 MB; keep the JVM within it.
       - key: JAVA_TOOL_OPTIONS
         value: -XX:MaxRAMPercentage=75 -XX:+UseSerialGC

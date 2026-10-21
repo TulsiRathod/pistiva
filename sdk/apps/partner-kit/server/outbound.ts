@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { KitMetrics } from "./metrics.ts";
 import {
   A2AClient,
   ContractRegistry,
@@ -71,6 +72,7 @@ export class OutboundService {
       keys: AgentKeyPair;
       repo: KitRepo;
       jobs: JobQueue;
+      metrics?: KitMetrics;
       /** Drafts an answer for the operator; never sent without them. */
       suggest?: (input: { request: Record<string, unknown>; question: string; options?: string[] }) => Promise<Suggestion | undefined>;
     },
@@ -248,6 +250,11 @@ export class OutboundService {
   }
 
   private async finish(provider: DiscoveredAgent, capability: string, version: number, outcome: A2AOutcome<unknown>): Promise<RunResult> {
+    if (outcome.state !== "input-required") {
+      const started = (await this.deps.repo.getTask(outcome.taskId))?.createdAt;
+      this.deps.metrics?.round("outbound", capability, outcome.state, started);
+      this.deps.metrics?.connection(outcome.connection);
+    }
     await this.deps.repo.upsertTask({
       id: outcome.taskId,
       direction: "outbound",

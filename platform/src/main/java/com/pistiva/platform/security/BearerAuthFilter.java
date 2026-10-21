@@ -3,6 +3,7 @@ package com.pistiva.platform.security;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pistiva.platform.common.ApiException;
 import com.pistiva.platform.identity.TokenService;
+import com.pistiva.platform.observability.PlatformMetrics;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -21,25 +22,30 @@ import java.util.Map;
 public class BearerAuthFilter extends OncePerRequestFilter {
 
     private final TokenService tokens;
+    private final PlatformMetrics metrics;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public BearerAuthFilter(TokenService tokens) {
+    public BearerAuthFilter(TokenService tokens, PlatformMetrics metrics) {
         this.tokens = tokens;
+        this.metrics = metrics;
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         String header = request.getHeader("Authorization");
-        if (header == null || !header.startsWith("Bearer ")) {
+        // Already authenticated, e.g. a metrics scraper's static token.
+        if (header == null || !header.startsWith("Bearer ") || SecurityContextHolder.getContext().getAuthentication() != null) {
             chain.doFilter(request, response);
             return;
         }
         String token = header.substring("Bearer ".length()).trim();
+        boolean agent = false;
         try {
             Object principal;
             String role;
-            if (TokenService.AGENT_TYP.equals(tokens.typeOf(token))) {
+            agent = TokenService.AGENT_TYP.equals(tokens.typeOf(token));
+            if (agent) {
                 principal = tokens.verifyAgentAssertion(token);
                 role = "ROLE_AGENT";
             } else {
@@ -49,6 +55,7 @@ public class BearerAuthFilter extends OncePerRequestFilter {
             var auth = new UsernamePasswordAuthenticationToken(principal, null, List.of(new SimpleGrantedAuthority(role)));
             SecurityContextHolder.getContext().setAuthentication(auth);
         } catch (ApiException e) {
+            metrics.authRejected(agent ? "agent" : "user");
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             mapper.writeValue(response.getOutputStream(), Map.of("error", "unauthorized", "message", e.getMessage()));

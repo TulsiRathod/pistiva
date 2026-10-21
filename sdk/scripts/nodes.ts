@@ -43,6 +43,8 @@ async function startNode(org: Bootstrapped, port: number, configText: string, db
     kid: org.kid,
     publicUrl: `http://localhost:${port}`,
     adminPassword: OPERATOR_PASSWORD,
+    // Matches infra/observability/prometheus.yml, so a local Prometheus can scrape the nodes.
+    metricsToken: process.env.KIT_METRICS_TOKEN ?? "local-metrics-token",
   });
   await kit.app.listen({ port, host: "0.0.0.0" });
   return { kit, db };

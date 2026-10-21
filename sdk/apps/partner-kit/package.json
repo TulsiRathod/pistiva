@@ -12,11 +12,14 @@
   "dependencies": {
     "@fastify/static": "^8.3.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.223.0",
+    "@opentelemetry/sdk-node": "^0.223.0",
     "@pistiva/agent-sdk": "*",
     "@pistiva/gateway": "*",
     "@pistiva/llm": "*",
     "@pistiva/procurement": "*",
     "pg": "^8.23.1",
+    "prom-client": "^15.1.3",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "yaml": "^2.9.1"

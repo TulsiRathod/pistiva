@@ -126,6 +126,26 @@ npm run certify -- --agent <agent> --submit
 
 Discovery marks each agent `certified` and accepts `certifiedOnly=true`. With `PISTIVA_CERTIFICATION_REQUIRED=true` (`pistiva.certification.required`), buyers only see certified agents and the platform refuses grants to uncertified ones. Certification lasts 365 days, and the latest run decides. Admins revoke certifications and designate certifiers from the console's Admin page.
 
+## Observability
+
+Prometheus metrics and OpenTelemetry traces cover the network measures in the spec (§15):
+- task completion rate
+- p50 and p95 task latency
+- the share of unauthorized requests blocked
+- fields disclosed and withheld
+- direct and relayed connections
+
+Metrics labels and span attributes hold only bounded values and ids: never field values or message contents. See [ADR 011](docs/adr/011-observability.md).
+
+```bash
+docker compose -f infra/docker-compose.yml -f infra/observability.yml up --build
+cd sdk && npm run demo        # some traffic; `npm run nodes` adds two scraped Partner Kit nodes
+```
+
+Grafana at http://localhost:3000 (admin / admin) has the **Pistiva network** dashboard. Prometheus is at :9090 and Jaeger at :16686.
+- **Platform:** `GET /actuator/prometheus` needs `Authorization: Bearer $PISTIVA_METRICS_TOKEN` and is closed without it. Traces are exported when `MANAGEMENT_OTLP_TRACING_ENDPOINT` is set.
+- **Partner Kit:** `GET /metrics` needs `Authorization: Bearer $KIT_METRICS_TOKEN`. Traces are exported when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+
 ## Task-type contracts
 
 `GET /task-types` lists the contracts. `GET /task-types/{name}/versions/{v}` returns one, with self-contained JSON Schemas per message kind. A platform admin can publish a new pack with `POST /task-types/packs`; published versions are immutable. See [ADR 005](docs/adr/005-a2a-with-pistiva-trust-and-task-contracts.md).

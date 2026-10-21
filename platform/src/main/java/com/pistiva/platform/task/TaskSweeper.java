@@ -1,6 +1,7 @@
 package com.pistiva.platform.task;
 
 import com.pistiva.platform.audit.AuditService;
+import com.pistiva.platform.observability.PlatformMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,11 +28,14 @@ public class TaskSweeper {
     private final JdbcTemplate jdbc;
     private final AuditService audit;
     private final Duration abandonAfter;
+    private final PlatformMetrics metrics;
 
-    public TaskSweeper(JdbcTemplate jdbc, AuditService audit, @Value("${pistiva.tasks.abandon-after:25h}") Duration abandonAfter) {
+    public TaskSweeper(JdbcTemplate jdbc, AuditService audit, @Value("${pistiva.tasks.abandon-after:25h}") Duration abandonAfter,
+                       PlatformMetrics metrics) {
         this.jdbc = jdbc;
         this.audit = audit;
         this.abandonAfter = abandonAfter;
+        this.metrics = metrics;
     }
 
     @Scheduled(fixedDelayString = "${pistiva.tasks.sweep-interval:10m}", initialDelayString = "${pistiva.tasks.sweep-interval:10m}")
@@ -68,6 +72,8 @@ public class TaskSweeper {
                 .forEach(r -> audit.record((UUID) r.get("task_id"), "TASK_EXPIRED", "platform:sweeper",
                         (UUID) r.get("requester_org"), (UUID) r.get("provider_org"), null, null,
                         Map.of("capability", r.get("capability"), "reason", "No terminal receipt within " + abandonAfter.toHours() + "h")));
-        return (int) expired.stream().map(r -> r.get("task_id")).distinct().count();
+        int count = (int) expired.stream().map(r -> r.get("task_id")).distinct().count();
+        metrics.tasksExpired(count);
+        return count;
     }
 }

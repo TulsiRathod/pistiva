@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # The control plane. Its endpoint needs the token set in PISTIVA_METRICS_TOKEN.
+  - job_name: pistiva-platform
+    metrics_path: /actuator/prometheus
+    authorization:
+      credentials: local-metrics-token
+    static_configs:
+      - targets: ["platform:8080"]
+
+  # Partner Kit nodes. In production each business scrapes only its own node.
+  - job_name: pistiva-nodes
+    metrics_path: /metrics
+    authorization:
+      credentials: local-metrics-token
+    static_configs:
+      - targets: ["host.docker.internal:9301", "host.docker.internal:9302"]

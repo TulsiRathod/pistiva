@@ -2,6 +2,8 @@ package com.pistiva.platform.security;
 
 import com.pistiva.platform.PlatformProperties;
 import com.pistiva.platform.identity.TokenService;
+import org.springframework.beans.factory.annotation.Value;
+import com.pistiva.platform.observability.PlatformMetrics;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -24,7 +26,8 @@ import java.util.List;
 public class SecurityConfig {
 
     @Bean
-    SecurityFilterChain filterChain(HttpSecurity http, TokenService tokens) throws Exception {
+    SecurityFilterChain filterChain(HttpSecurity http, TokenService tokens, PlatformMetrics metrics,
+                                    @Value("${pistiva.metrics.token:}") String metricsToken) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
                 .cors(cors -> {
@@ -38,8 +41,10 @@ public class SecurityConfig {
                                 "/actuator/health", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/error")
                         .permitAll()
                         .requestMatchers(HttpMethod.GET, "/task-types", "/task-types/**").permitAll()
+                        .requestMatchers(MetricsTokenFilter.PATH).hasRole(MetricsTokenFilter.ROLE)
                         .anyRequest().authenticated())
-                .addFilterBefore(new BearerAuthFilter(tokens), UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(new MetricsTokenFilter(metricsToken), UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(new BearerAuthFilter(tokens, metrics), MetricsTokenFilter.class);
         return http.build();
     }
 

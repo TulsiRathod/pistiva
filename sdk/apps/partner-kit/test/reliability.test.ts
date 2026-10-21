@@ -134,7 +134,7 @@ describe("Partner Kit reliability", { timeout: 180_000 }, () => {
     await supplier?.close();
     await Promise.all(pools.map((p) => p.end()));
     await pg?.stop();
-  });
+  }, 60_000);
 
   it("job queue retries with backoff, gives up after the limit, and de-duplicates recurring jobs", async () => {
     const db = await database("rel_jobs");

@@ -7,6 +7,7 @@ import com.pistiva.platform.agent.AgentRepository;
 import com.pistiva.platform.audit.AuditService;
 import com.pistiva.platform.common.ApiException;
 import com.pistiva.platform.common.Jcs;
+import com.pistiva.platform.observability.PlatformMetrics;
 import com.pistiva.platform.org.Organization;
 import com.pistiva.platform.org.OrganizationRepository;
 import com.pistiva.platform.org.OrgService;
@@ -47,11 +48,12 @@ public class CertificationService {
     private final TaskTypeService taskTypes;
     private final AuditService audit;
     private final ObjectMapper mapper;
+    private final PlatformMetrics metrics;
     private final Duration validity;
     private volatile boolean required;
 
     public CertificationService(JdbcTemplate jdbc, AgentRepository agents, OrganizationRepository orgs, OrgService orgService,
-                                TaskTypeService taskTypes, AuditService audit, ObjectMapper mapper,
+                                TaskTypeService taskTypes, AuditService audit, ObjectMapper mapper, PlatformMetrics metrics,
                                 @Value("${pistiva.certification.validity:365d}") Duration validity,
                                 @Value("${pistiva.certification.required:false}") boolean required) {
         this.jdbc = jdbc;
@@ -61,6 +63,7 @@ public class CertificationService {
         this.taskTypes = taskTypes;
         this.audit = audit;
         this.mapper = mapper;
+        this.metrics = metrics;
         this.validity = validity;
         this.required = required;
     }
@@ -126,6 +129,7 @@ public class CertificationService {
         details.put("reportHash", reportHash);
         audit.record(null, status == Status.PASSED ? "AGENT_CERTIFIED" : "CERTIFICATION_FAILED", "agent:" + certifier.agentId(),
                 certifier.orgId(), target.getOrgId(), null, null, details);
+        metrics.certification(status.name());
         return get(id, true);
     }
 

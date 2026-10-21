@@ -9,10 +9,15 @@ import com.pistiva.platform.audit.AuditService;
 import com.pistiva.platform.common.ApiException;
 import com.pistiva.platform.common.Ed25519;
 import com.pistiva.platform.common.Jcs;
+import com.pistiva.platform.observability.PlatformMetrics;
 import com.pistiva.platform.security.Principals.AgentPrincipal;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -34,14 +39,16 @@ public class ReceiptService {
     private final AgentRepository agents;
     private final AgentKeyRepository keys;
     private final AuditService audit;
+    private final PlatformMetrics metrics;
 
     public ReceiptService(TaskGrantRepository grants, TaskReceiptRepository receipts, AgentRepository agents,
-                          AgentKeyRepository keys, AuditService audit) {
+                          AgentKeyRepository keys, AuditService audit, PlatformMetrics metrics) {
         this.grants = grants;
         this.receipts = receipts;
         this.agents = agents;
         this.keys = keys;
         this.audit = audit;
+        this.metrics = metrics;
     }
 
     public record SignedReceipt(JsonNode receipt, String providerKid, String providerSignature,
@@ -56,6 +63,7 @@ public class ReceiptService {
         JsonNode r = signed.receipt();
         UUID taskId = parseUuid(r.path("taskId").asText(), "receipt.taskId");
         UUID grantId = parseUuid(r.path("grantId").asText(), "receipt.grantId");
+        metrics.tagTask(taskId);
         TaskGrant grant = grants.findById(grantId).filter(g -> g.getTaskId().equals(taskId))
                 .orElseThrow(() -> new ApiException.NotFound("Unknown task or grant"));
         if (!caller.agentId().equals(grant.getRequesterAgentId()) && !caller.agentId().equals(grant.getProviderAgentId())) {
@@ -96,9 +104,15 @@ public class ReceiptService {
         }
         receipts.save(new TaskReceipt(taskId, round, grantId, state, requestHash, responseHash,
                 signed.providerKid(), signed.providerSignature(), signed.requesterKid(), signed.requesterSignature()));
-        if (TERMINAL_STATES.contains(state)) {
-            grants.findByTaskId(taskId).forEach(TaskGrant::complete);
+        boolean terminal = TERMINAL_STATES.contains(state);
+        Duration sinceFirstGrant = Duration.ZERO;
+        if (terminal) {
+            List<TaskGrant> taskGrants = grants.findByTaskId(taskId);
+            taskGrants.forEach(TaskGrant::complete);
+            Instant first = taskGrants.stream().map(TaskGrant::getCreatedAt).min(Comparator.naturalOrder()).orElse(Instant.now());
+            sinceFirstGrant = Duration.between(first, Instant.now());
         }
+        metrics.round(grant.getCapability(), state, terminal, sinceFirstGrant);
 
         Agent requester = agents.findById(grant.getRequesterAgentId()).orElseThrow();
         Agent provider = agents.findById(grant.getProviderAgentId()).orElseThrow();

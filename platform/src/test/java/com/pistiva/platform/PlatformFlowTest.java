@@ -41,8 +41,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "pistiva.signing-key-file=target/test-signing-key",
         "pistiva.webhooks.allow-http=true",
         "pistiva.webhooks.dispatch-interval=1h",
-        "pistiva.tasks.sweep-interval=1h"})
+        "pistiva.tasks.sweep-interval=1h",
+        "pistiva.metrics.token=test-metrics-token"})
 @AutoConfigureMockMvc
+@org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability
 @Testcontainers(disabledWithoutDocker = true)
 class PlatformFlowTest {
 
@@ -459,6 +461,31 @@ class PlatformFlowTest {
         }
         mvc.perform(get("/agents/" + supplier.agentId() + "/certifications").header("Authorization", "Bearer " + buyer.userToken()))
                 .andExpect(jsonPath("$[0].status").value("REVOKED")).andExpect(jsonPath("$.length()").value(1));
+    }
+
+    @Test
+    void prometheusEndpointNeedsTheScrapeTokenAndExposesNetworkMeasures() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        JsonNode grant = body(requestGrant(buyer, supplier, "quote.request", "100.00").andExpect(status().isOk()));
+        requestGrant(buyer, supplier, "inventory.export", "100.00").andExpect(status().isForbidden());
+        submitRound(buyer, supplier, grant, 1, "completed").andExpect(status().isOk());
+        mvc.perform(get("/me").header("Authorization", "Bearer not-a-token")).andExpect(status().isUnauthorized());
+
+        mvc.perform(get("/actuator/prometheus")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/actuator/prometheus").header("Authorization", "Bearer wrong")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/actuator/prometheus").header("Authorization", "Bearer " + adminToken)).andExpect(status().isForbidden());
+        String scrape = mvc.perform(get("/actuator/prometheus").header("Authorization", "Bearer test-metrics-token"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(scrape)
+                .contains("pistiva_grants_total{capability=\"quote.request\",outcome=\"issued\"")
+                // An unregistered capability name never becomes a label value.
+                .contains("pistiva_grants_total{capability=\"other\",outcome=\"denied\"")
+                .contains("pistiva_tasks_finished_total{capability=\"quote.request\",state=\"completed\"")
+                .contains("pistiva_task_duration_seconds_bucket{capability=\"quote.request\"")
+                .contains("pistiva_auth_rejected_total{kind=\"user\"")
+                .doesNotContain(supplier.agentId().toString())
+                .doesNotContain(grant.get("taskId").asText());
     }
 
     private ResultActions submitCertification(TestAgent certifier, TestAgent target, boolean allPass) throws Exception {

@@ -143,7 +143,7 @@ describe("Partner Kit AI layer", { timeout: 120_000 }, () => {
     await supplier?.close();
     await Promise.all(dbs.map((d) => d.end()));
     await pg?.stop();
-  });
+  }, 60_000);
 
   it("drafts a contract-valid quote.request from a description for the operator to review", async () => {
     const out = await ui<{ request: Record<string, unknown>; missing: string[]; promptId: string }>("/ui/interpret", { text: "We need forty thousand M8 nuts" });

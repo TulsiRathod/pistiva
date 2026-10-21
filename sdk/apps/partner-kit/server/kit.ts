@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
@@ -15,6 +16,7 @@ import { buildConnector, McpInventory } from "./connectors.ts";
 import { migrate, type Db } from "./db.ts";
 import { buildCapabilities, disclosureKey } from "./modules.ts";
 import { OutboundService, summarize, type OutboundRequest } from "./outbound.ts";
+import { KitMetrics } from "./metrics.ts";
 import { KitRepo, PgAuditSink, PgDraftStore, PgNonceStore, PgTaskStore, type Direction } from "./repo.ts";
 
 export interface KitDeps {
@@ -36,6 +38,8 @@ export interface KitDeps {
   approvalPollMs?: number;
   /** How often maintenance jobs run: question deadlines, stalled tasks, receipt re-submission (default 60 s). */
   maintenanceMs?: number;
+  /** Bearer token a Prometheus scraper sends to GET /metrics; without one the endpoint is off. */
+  metricsToken?: string;
   /** Directory of the built operator UI; served when present. */
   webDir?: string;
   logger?: boolean;
@@ -47,6 +51,7 @@ export interface Kit {
   outbound: OutboundService;
   commitments: CommitmentService;
   jobs: JobQueue;
+  metrics: KitMetrics;
   close(): Promise<void>;
 }
 
@@ -88,7 +93,8 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
   if (deps.publishCard !== false && card.capabilities.length) await platform.publishCard(card);
 
   const jobs = new JobQueue(db);
-  const outbound = new OutboundService({ platform, keys: deps.keys, repo, jobs, suggest: (input) => ai.suggest(input) });
+  const metrics = new KitMetrics(new Set([...Object.keys(cfg.provides), ...cfg.requests]), { jobs, repo });
+  const outbound = new OutboundService({ platform, keys: deps.keys, repo, jobs, metrics, suggest: (input) => ai.suggest(input) });
   const commitments = new CommitmentService({ db, repo, outbound, platform });
   jobs.register("approvals.poll", () => commitments.poll());
   jobs.every("approvals.poll", deps.approvalPollMs ?? 5000);
@@ -107,10 +113,18 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
     capabilities: handlers,
     taskStore: new PgTaskStore(db),
     nonceStore: nonces,
-    audit: new PgAuditSink(db),
+    audit: metrics.auditSink(new PgAuditSink(db)),
     logger: deps.logger,
-    onRound: (r) => recordInbound(repo, r),
+    onRound: (r) => recordInbound(repo, metrics, r),
     onCountersigned: (signed) => repo.saveReceipt(signed.receipt.taskId, signed, { countersigned: true }),
+  });
+
+  app.get("/metrics", async (req, reply) => {
+    const expected = deps.metricsToken ? Buffer.from(`Bearer ${deps.metricsToken}`) : undefined;
+    const given = Buffer.from(req.headers.authorization ?? "");
+    if (!expected) return reply.code(404).send({ error: "not_found" });
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return reply.code(401).send({ error: "unauthorized" });
+    return reply.header("Content-Type", metrics.registry.contentType).send(await metrics.registry.metrics());
   });
 
   registerOperatorApi(app, { repo, outbound, commitments, ai, jobs, cfg, contracts, disclosure, connectors, versionOf, auth: new OperatorAuth(deps.adminPassword, deps.sessionSecret), deps });
@@ -129,6 +143,7 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
     outbound,
     commitments,
     jobs,
+    metrics,
     async close() {
       jobs.stop();
       await outbound.idle();
@@ -138,9 +153,12 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
   };
 }
 
-async function recordInbound(repo: KitRepo, r: RoundRecord): Promise<void> {
+async function recordInbound(repo: KitRepo, metrics: KitMetrics, r: RoundRecord): Promise<void> {
   const data = singleDataPart(r.reply?.parts);
   const text = r.reply?.parts.find((p) => p.kind === "text");
+  const existing = await repo.getTask(r.taskId);
+  metrics.round("inbound", r.capability, r.state, existing?.createdAt ?? new Date().toISOString());
+  if (r.state === "completed") metrics.disclosure(r.capability, Object.keys(data ?? {}).length, r.fieldsWithheld.length);
   await repo.upsertTask({
     id: r.taskId,
     direction: "inbound",
