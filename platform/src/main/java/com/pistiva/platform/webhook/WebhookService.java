@@ -26,7 +26,8 @@ public class WebhookService {
     private static final SecureRandom RANDOM = new SecureRandom();
     /** Audit event types an organization can subscribe to; "*" means all of them. */
     public static final Set<String> EVENT_TYPES = Set.of("*", "GRANT_ISSUED", "GRANT_DENIED", "RECEIPT_RECORDED",
-            "APPROVAL_REQUESTED", "APPROVAL_DECIDED", "TASK_EXPIRED", "AGENT_STATUS_CHANGED", "AGENT_KEY_REVOKED", "ORG_VERIFIED");
+            "APPROVAL_REQUESTED", "APPROVAL_DECIDED", "TASK_EXPIRED", "AGENT_STATUS_CHANGED", "AGENT_KEY_REVOKED", "ORG_VERIFIED",
+            "AGENT_CERTIFIED", "CERTIFICATION_FAILED", "CERTIFICATION_REVOKED");
 
     private final JdbcTemplate jdbc;
     private final OrgService orgService;

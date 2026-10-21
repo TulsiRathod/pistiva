@@ -49,7 +49,7 @@ public class AdminController {
     }
 
     public record OrgRow(UUID id, String name, String domain, String verificationStatus, String status, Instant createdAt,
-                         long members, long agents, long activeAgents, Instant lastActivity) {
+                         long members, long agents, long activeAgents, Instant lastActivity, boolean certifier) {
     }
 
     @GetMapping("/overview")
@@ -138,14 +138,15 @@ public class AdminController {
                        (SELECT count(*) FROM org_members m WHERE m.org_id = o.id),
                        (SELECT count(*) FROM agents a WHERE a.org_id = o.id),
                        (SELECT count(*) FROM agents a WHERE a.org_id = o.id AND a.status = 'ACTIVE'),
-                       (SELECT max(created_at) FROM audit_events e WHERE e.requester_org_id = o.id OR e.provider_org_id = o.id)
+                       (SELECT max(created_at) FROM audit_events e WHERE e.requester_org_id = o.id OR e.provider_org_id = o.id),
+                       o.certifier
                 FROM organizations o
                 ORDER BY o.created_at DESC""",
                 (rs, i) -> {
                     Timestamp last = rs.getTimestamp(10);
                     return new OrgRow(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4),
                             rs.getString(5), rs.getTimestamp(6).toInstant(), rs.getLong(7), rs.getLong(8), rs.getLong(9),
-                            last == null ? null : last.toInstant());
+                            last == null ? null : last.toInstant(), rs.getBoolean(11));
                 });
     }
 

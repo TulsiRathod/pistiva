@@ -43,3 +43,7 @@ pistiva:
   cors-origins: ${PISTIVA_CORS_ORIGINS:http://localhost:5173}
   redis:
     url: ${PISTIVA_REDIS_URL:}
+  certification:
+    # When true, discovery hides uncertified agents and grants to them are refused (certifiers excepted).
+    required: ${PISTIVA_CERTIFICATION_REQUIRED:false}
+    validity: 365d

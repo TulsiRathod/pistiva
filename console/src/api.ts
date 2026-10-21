@@ -124,6 +124,24 @@ export interface AdminOrg {
   agents: number;
   activeAgents: number;
   lastActivity: string | null;
+  certifier: boolean;
+}
+
+/** The latest conformance-suite result for one task-type version of an agent. */
+export interface Certification {
+  id: string;
+  agentId: string;
+  orgId: string;
+  taskType: string;
+  taskTypeVersion: number;
+  status: "PASSED" | "FAILED" | "REVOKED";
+  valid: boolean;
+  suiteVersion: string;
+  checksPassed: number;
+  checksTotal: number;
+  createdAt: string;
+  expiresAt: string;
+  revokedReason: string | null;
 }
 
 export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "CHANGES_REQUESTED";
@@ -181,6 +199,7 @@ export class Api {
   revokeKey = (agentId: string, kid: string) => this.call<AgentKey>("DELETE", `/agents/${agentId}/keys/${kid}`);
   setAgentStatus = (agentId: string, status: "ACTIVE" | "SUSPENDED") => this.call<Agent>("POST", `/agents/${agentId}/status`, { status });
   card = (agentId: string) => this.call<Card>("GET", `/agents/${agentId}/card`);
+  certifications = (agentId: string) => this.call<Certification[]>("GET", `/agents/${agentId}/certifications`);
 
   policy = (orgId: string) => this.call<Policy>("GET", `/orgs/${orgId}/policy`);
   updatePolicy = (orgId: string, p: Policy) => this.call<Policy>("PUT", `/orgs/${orgId}/policy`, p);
@@ -193,6 +212,9 @@ export class Api {
   adminOverview = (days = 14) => this.call<AdminOverview>("GET", `/admin/overview?days=${days}`);
   adminEvents = (limit = 25) => this.call<AdminEvent[]>("GET", `/admin/events?limit=${limit}`);
   adminOrgs = () => this.call<AdminOrg[]>("GET", "/admin/organizations");
+  adminCertifications = (limit = 50) => this.call<Certification[]>("GET", `/admin/certifications?limit=${limit}`);
+  revokeCertification = (id: string, reason: string) => this.call<Certification>("POST", `/admin/certifications/${id}/revoke`, { reason });
+  setCertifier = (orgId: string, certifier: boolean) => this.call<unknown>("PUT", `/admin/organizations/${orgId}/certifier`, { certifier });
 
   audit = (orgId: string, taskId?: string) =>
     this.call<AuditEvent[]>("GET", `/audit?orgId=${orgId}${taskId ? `&taskId=${encodeURIComponent(taskId)}` : ""}`);

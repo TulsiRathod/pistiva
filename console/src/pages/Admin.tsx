@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import type { AdminEvent, AdminOrg, Api, DayActivity } from "../api.ts";
+import type { AdminEvent, AdminOrg, Api, Certification, DayActivity } from "../api.ts";
 import { useAction, useAsync } from "../useAsync.ts";
+import { CertBadge } from "./Agents.tsx";
 
 /** Platform-admin dashboard: network health, activity, verification queue and organization management. */
 export function Admin({ api }: { api: Api }) {
@@ -8,12 +9,14 @@ export function Admin({ api }: { api: Api }) {
   const overview = useAsync(() => api.adminOverview(days), [api, days]);
   const orgs = useAsync(() => api.adminOrgs(), [api]);
   const events = useAsync(() => api.adminEvents(12), [api]);
+  const certs = useAsync(() => api.adminCertifications(), [api]);
   const action = useAction();
 
   const refresh = () => {
     overview.reload();
     orgs.reload();
     events.reload();
+    certs.reload();
   };
   const act = (fn: () => Promise<unknown>) => action.run(fn).then((ok) => ok && refresh());
 
@@ -87,6 +90,8 @@ export function Admin({ api }: { api: Api }) {
         </div>
         <EventFeed events={events.data ?? []} />
       </section>
+
+      <CertificationTable certs={certs.data ?? []} orgs={orgs.data ?? []} busy={action.busy} act={act} api={api} />
 
       <OrgTable orgs={orgs.data ?? []} busy={action.busy} act={act} api={api} />
     </>
@@ -254,6 +259,10 @@ const EVENT_LABELS: Record<string, [string, string]> = {
   AGENT_CARD_PUBLISHED: ["Card published", "chip"],
   POLICY_UPDATED: ["Policy updated", "chip"],
   MEMBER_ADDED: ["Member added", "chip"],
+  AGENT_CERTIFIED: ["Certified", "chip chip-green"],
+  CERTIFICATION_FAILED: ["Certification failed", "chip chip-bad"],
+  CERTIFICATION_REVOKED: ["Certification revoked", "chip chip-warn"],
+  ORG_CERTIFIER_CHANGED: ["Certifier", "chip"],
 };
 
 function EventFeed({ events }: { events: AdminEvent[] }) {
@@ -285,7 +294,7 @@ function detail(e: AdminEvent): string {
   try {
     const d = JSON.parse(e.details) as Record<string, unknown>;
     if (e.type === "RECEIPT_RECORDED") return `round ${d.round} · ${d.status}`;
-    return String(d.reason ?? d.capability ?? d.status ?? d.method ?? d.domain ?? "");
+    return String(d.reason ?? d.taskType ?? d.capability ?? d.status ?? d.method ?? d.domain ?? "");
   } catch {
     return "";
   }
@@ -340,7 +349,7 @@ function OrgTable({ orgs, busy, act, api }: { orgs: AdminOrg[]; busy: boolean; a
             {rows.map((o) => (
               <tr key={o.id}>
                 <td>
-                  <strong>{o.name}</strong>
+                  <strong>{o.name}</strong> {o.certifier && <span className="chip chip-green">Certifier</span>}
                   <div className="muted">{o.domain}</div>
                 </td>
                 <td>
@@ -360,6 +369,11 @@ function OrgTable({ orgs, busy, act, api }: { orgs: AdminOrg[]; busy: boolean; a
                   {o.verificationStatus !== "VERIFIED" && (
                     <button className="small" disabled={busy} onClick={() => act(() => api.verifyOrg(o.id, "manual"))}>
                       Verify
+                    </button>
+                  )}
+                  {o.verificationStatus === "VERIFIED" && (
+                    <button className="small" disabled={busy} onClick={() => act(() => api.setCertifier(o.id, !o.certifier))}>
+                      {o.certifier ? "Remove certifier" : "Make certifier"}
                     </button>
                   )}
                   <button
@@ -382,6 +396,78 @@ function OrgTable({ orgs, busy, act, api }: { orgs: AdminOrg[]; busy: boolean; a
           </tbody>
         </table>
       </div>
+    </section>
+  );
+}
+
+/** The latest conformance results across the network, newest first. */
+function CertificationTable({ certs, orgs, busy, act, api }: { certs: Certification[]; orgs: AdminOrg[]; busy: boolean; act: (fn: () => Promise<unknown>) => void; api: Api }) {
+  const orgName = new Map(orgs.map((o) => [o.id, o.name]));
+  return (
+    <section className="card">
+      <div className="row">
+        <h2>Certifications</h2>
+        <span className="muted">{certs.filter((c) => c.valid).length} valid</span>
+      </div>
+      {certs.length === 0 ? (
+        <p className="muted">No conformance results yet. Mark an organization as a certifier, then run pistiva-certify with --submit from its agent.</p>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Organization</th>
+                <th>Task type</th>
+                <th>Result</th>
+                <th className="num">Checks</th>
+                <th>Recorded</th>
+                <th>Expires</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {certs.map((c) => (
+                <tr key={c.id}>
+                  <td>
+                    <strong>{orgName.get(c.orgId) ?? c.orgId}</strong>
+                    <div className="muted">
+                      <code>{c.agentId.slice(0, 8)}</code>
+                    </div>
+                  </td>
+                  <td>
+                    <code>
+                      {c.taskType}@{c.taskTypeVersion}
+                    </code>
+                  </td>
+                  <td>
+                    <CertBadge cert={c} />
+                    {c.revokedReason && <div className="muted">{c.revokedReason}</div>}
+                  </td>
+                  <td className="num">
+                    {c.checksPassed}/{c.checksTotal}
+                  </td>
+                  <td className="muted">{relative(c.createdAt)}</td>
+                  <td className="muted">{new Date(c.expiresAt).toLocaleDateString()}</td>
+                  <td className="actions">
+                    {c.status !== "REVOKED" && (
+                      <button
+                        className="small danger"
+                        disabled={busy}
+                        onClick={() => {
+                          const reason = window.prompt("Why is this certification being revoked?");
+                          if (reason?.trim()) act(() => api.revokeCertification(c.id, reason.trim()));
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }

@@ -1,0 +1,16 @@
+{
+  "name": "@pistiva/certify",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Conformance suite and pistiva-certify CLI: probes a partner agent over A2A and records the result on the platform",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "pistiva-certify": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@pistiva/agent-sdk": "*"
+  }
+}

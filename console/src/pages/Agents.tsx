@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import type { Agent, Api } from "../api.ts";
+import type { Agent, Api, Certification } from "../api.ts";
 import { useAction, useAsync } from "../useAsync.ts";
 
 export function Agents({ api, orgId }: { api: Api; orgId: string }) {
@@ -52,6 +52,7 @@ export function Agents({ api, orgId }: { api: Api; orgId: string }) {
 function AgentDetail({ api, agent, onChanged }: { api: Api; agent: Agent; onChanged: () => void }) {
   const keys = useAsync(() => api.keys(agent.id), [api, agent.id]);
   const card = useAsync(() => api.card(agent.id).catch(() => undefined), [api, agent.id]);
+  const certs = useAsync(() => api.certifications(agent.id), [api, agent.id]);
   const [publicKey, setPublicKey] = useState("");
   const action = useAction();
 
@@ -111,6 +112,30 @@ function AgentDetail({ api, agent, onChanged }: { api: Api; agent: Agent; onChan
         <button disabled={action.busy}>Add key</button>
       </form>
 
+      <h3>Certification</h3>
+      {certs.data?.length ? (
+        <ul className="list">
+          {certs.data.map((c) => (
+            <li key={c.id}>
+              <span>
+                <code>
+                  {c.taskType}@{c.taskTypeVersion}
+                </code>{" "}
+                <span className="muted">
+                  {c.checksPassed}/{c.checksTotal} checks · {c.status === "REVOKED" ? c.revokedReason : `until ${new Date(c.expiresAt).toLocaleDateString()}`}
+                </span>
+              </span>
+              <CertBadge cert={c} />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">
+          Not certified yet. Run <code>pistiva-certify</code> against your gateway, then ask a certifier to record the result. Networks that require
+          certification only show certified agents to buyers.
+        </p>
+      )}
+
       <h3>Signed agent card</h3>
       {card.data ? (
         <>
@@ -124,4 +149,10 @@ function AgentDetail({ api, agent, onChanged }: { api: Api; agent: Agent; onChan
       )}
     </section>
   );
+}
+
+export function CertBadge({ cert }: { cert: Certification }) {
+  if (cert.valid) return <span className="badge ok">CERTIFIED</span>;
+  if (cert.status === "PASSED") return <span className="badge warn">EXPIRED</span>;
+  return <span className="badge bad">{cert.status}</span>;
 }

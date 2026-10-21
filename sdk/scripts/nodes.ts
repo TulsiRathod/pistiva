@@ -2,7 +2,8 @@
  * Runs two Pistiva nodes (Partner Kits) against a live platform: a supplier and a buyer, each with
  * its own database, keys and operator UI.
  *   npm run nodes            # start both and keep running; open the printed URLs
- *   npm run nodes -- --check # run a quote with a clarification round through the operator API, then exit
+ *   npm run nodes -- --check # run a quote with a clarification round through the operator API, certify the
+ *                            # supplier node with the conformance suite, then exit
  * Needs Postgres reachable at NODES_DB_URL (default: the local compose database).
  */
 import { writeFile } from "node:fs/promises";
@@ -11,7 +12,8 @@ import { PlatformClient } from "@pistiva/agent-sdk";
 import { createPool, type Db } from "../apps/partner-kit/server/db.ts";
 import { loadConfig } from "../apps/partner-kit/server/config.ts";
 import { createKit, type Kit } from "../apps/partner-kit/server/kit.ts";
-import { Bootstrapper, PLATFORM_URL, waitForPlatform, type Bootstrapped } from "./lib/bootstrap.ts";
+import { runConformance } from "../packages/certify/src/index.ts";
+import { api, Bootstrapper, PLATFORM_URL, waitForPlatform, type Bootstrapped } from "./lib/bootstrap.ts";
 
 const DB_URL = process.env.NODES_DB_URL ?? "postgres://pistiva:pistiva@localhost:5432/pistiva";
 const OPERATOR_PASSWORD = process.env.KIT_ADMIN_PASSWORD ?? "operator-password";
@@ -132,6 +134,21 @@ outbound: { currency: INR, defaultBudget: "5000.00" }
     const sDetail = await ui<{ messages: { sender: string; kind: string; withheld: string[] | null }[] }>(SUPPLIER_PORT, `/ui/tasks/${inbound!.id}`, sToken);
     const withheld = sDetail.messages.find((m) => m.sender === "us" && m.kind === "result")?.withheld ?? [];
     check("supplier node recorded what it withheld", withheld.includes("costPrice") && withheld.includes("stockOnHand"), withheld.join(", "));
+
+    // A certifier organization runs the conformance suite against the supplier node over the network.
+    const certifierOrg = await boot.org("certlab", "Pistiva Certification Lab", "http://localhost:9399");
+    await api("PUT", `/admin/organizations/${certifierOrg.orgId}/certifier`, await boot.admin(), { certifier: true });
+    const certifier = new PlatformClient({ baseUrl: PLATFORM_URL, agentId: certifierOrg.agentId, kid: certifierOrg.kid, keys: certifierOrg.keys, statusTtlMs: 0 });
+    const target = (await certifier.discover("quote.request")).find((d) => d.agentId === supplierOrg.agentId);
+    check("supplier node is not certified before the suite runs", target?.certified === false);
+    const report = await runConformance({ platform: certifier, keys: certifierOrg.keys, provider: target!, capability: "quote.request", sample: { sku: "NUT-M8", qty: 100 } });
+    const failed = report.checks.filter((c) => !c.passed);
+    check("supplier node passes the conformance suite", report.passed, failed.length ? failed.map((c) => `${c.id}: ${c.detail}`).join("; ") : `${report.checks.length} checks`);
+    const cert = await certifier.submitCertification(supplierOrg.agentId, report);
+    check("certification recorded on the platform", cert.status === "PASSED" && cert.valid, `valid until ${cert.expiresAt.slice(0, 10)}`);
+    const buyerPlatform = new PlatformClient({ baseUrl: PLATFORM_URL, agentId: buyerOrg.agentId, kid: buyerOrg.kid, keys: buyerOrg.keys });
+    const certifiedOnly = await buyerPlatform.discover("quote.request", { certifiedOnly: true });
+    check("buyers can discover only certified suppliers", certifiedOnly.some((d) => d.agentId === supplierOrg.agentId && d.certified));
   } finally {
     await buyer.kit.close();
     await supplier.kit.close();

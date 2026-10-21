@@ -1,4 +1,4 @@
-# Pistiva — privacy-first business AI agent network
+# Pistiva â€” privacy-first business AI agent network
 
 This is the network described in the team document (v1.0, 21 Oct 2026). Milestone 1 delivered identity, registry, messaging and policy. Milestone 2.1 adds the **A2A protocol**, **task-type contracts** and **multi-turn tasks**. Independently run buyer and supplier agents:
 - discover each other
@@ -26,7 +26,7 @@ sdk/        TypeScript workspace
 console/    React + Vite console: landing page, org verification, agents and keys, kill switch, approvals,
             policy, audit, platform admin dashboard
 infra/      docker-compose for the whole stack
-docs/adr/   architecture decisions 001–008
+docs/adr/   architecture decisions 001â€“008
 ```
 
 ## Run it
@@ -66,7 +66,7 @@ The default platform admin is `admin@pistiva.local` / `change-me-admin`. Overrid
 2. In the console: register the agent, then paste the printed public key.
 3. Start the gateway with `examples/supplier-agent` as a template. It publishes its signed card on start:
    ```bash
-   AGENT_ID=… ORG_ID=… KEY_FILE=… KEY_PASSPHRASE=… npm start
+   AGENT_ID=â€¦ ORG_ID=â€¦ KEY_FILE=â€¦ KEY_PASSPHRASE=â€¦ npm start
    ```
 
 ## Partner Kit (a node per business)
@@ -77,7 +77,7 @@ Each business runs its own Pistiva node: the gateway that answers other agents, 
 cd sdk/apps/partner-kit
 cp config/agents.example.yaml config/agents.yaml      # choose modules and connectors (JSON, CSV or MCP)
 mkdir keys && cp <your agent key file> keys/agent.key.json
-AGENT_ID=… ORG_ID=… KEY_PASSPHRASE=… KIT_ADMIN_PASSWORD=… PUBLIC_URL=https://node.example.com \
+AGENT_ID=â€¦ ORG_ID=â€¦ KEY_PASSPHRASE=â€¦ KIT_ADMIN_PASSWORD=â€¦ PUBLIC_URL=https://node.example.com \
   docker compose up -d --build                         # node UI on http://localhost:9300
 ```
 
@@ -87,7 +87,7 @@ To try it locally against your local platform, run `cd sdk && npm run nodes`. It
 
 Each node can turn on an AI layer in `agents.yaml`, using the Claude API, a local Ollama model, or none. See [ADR 008](docs/adr/008-ai-layer.md).
 - **Buyer side:** turns a description into a quote request for the operator to review, and suggests answers to suppliers' questions.
-- **Supplier side:** offers "did you mean…" alternatives from its own catalog (hybrid pgvector search), and asks before quoting items that conflict with a buyer's specs.
+- **Supplier side:** offers "did you meanâ€¦" alternatives from its own catalog (hybrid pgvector search), and asks before quoting items that conflict with a buyer's specs.
 
 Models only draft and ask. Grants, contracts and disclosure rules decide everything, so turning AI on never changes what can be committed or disclosed.
 
@@ -104,8 +104,27 @@ A purchase above your organization's approval threshold can't be committed until
 
 See [ADR 009](docs/adr/009-background-work-and-reliability.md).
 - **Partner Kit:** a Postgres-backed job queue resumes tasks after restarts and retries with backoff. It cancels tasks whose questions go unanswered for 24 hours, recovers tasks from suppliers that went silent, and re-sends receipts the platform refused. `GET /ui/jobs` shows the queue. Replicas of one node share replay protection through its database.
-- **Platform:** `POST /orgs/{orgId}/webhooks` with `{ "url": "https://…", "events": ["GRANT_ISSUED", "TASK_EXPIRED"] }` subscribes to events. `GET /webhooks/event-types` lists them, and `*` subscribes to all. Each delivery is signed with `X-Pistiva-Signature: sha256=HMAC(secret, timestamp + "." + body)`. The secret is returned only when the webhook is created, and deliveries are retried for up to 10 attempts. Abandoned tasks are expired after 25 hours.
+- **Platform:** `POST /orgs/{orgId}/webhooks` with `{ "url": "https://â€¦", "events": ["GRANT_ISSUED", "TASK_EXPIRED"] }` subscribes to events. `GET /webhooks/event-types` lists them, and `*` subscribes to all. Each delivery is signed with `X-Pistiva-Signature: sha256=HMAC(secret, timestamp + "." + body)`. The secret is returned only when the webhook is created, and deliveries are retried for up to 10 attempts. Abandoned tasks are expired after 25 hours.
 - **Multiple platform replicas:** set `PISTIVA_REDIS_URL` (for example `redis://redis:6379`) to share replay protection between them.
+
+## Partner certification
+
+A conformance suite checks that a partner's agent keeps the protocol's promises before buyers rely on it. See [ADR 010](docs/adr/010-partner-certification.md). It checks:
+- the signed A2A card
+- that unsigned, tampered, expired, replayed and out-of-scope messages are rejected
+- that requests and results follow the contract
+- that only granted fields are disclosed
+- signed receipts and idempotent retries
+
+```bash
+cd sdk
+# Self-test before applying; nothing is recorded.
+CERTIFIER_AGENT_ID=<another of your agents> CERTIFIER_KEY_FILE=<its key file> KEY_PASSPHRASE=â€¦   npm run certify -- --agent <agent to test> --capability quote.request --sample '{"sku":"NUT-M8","qty":100}'
+# A certifier records the result (its organization is marked as certifier by a platform admin).
+npm run certify -- --agent <agent> --submit
+```
+
+Discovery marks each agent `certified` and accepts `certifiedOnly=true`. With `PISTIVA_CERTIFICATION_REQUIRED=true` (`pistiva.certification.required`), buyers only see certified agents and the platform refuses grants to uncertified ones. Certification lasts 365 days, and the latest run decides. Admins revoke certifications and designate certifiers from the console's Admin page.
 
 ## Task-type contracts
 

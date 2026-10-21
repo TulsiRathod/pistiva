@@ -21,6 +21,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.security.KeyPair;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -63,6 +64,8 @@ class PlatformFlowTest {
     com.pistiva.platform.task.TaskSweeper sweeper;
     @Autowired
     org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @Autowired
+    com.pistiva.platform.certification.CertificationService certifications;
 
     String adminToken;
 
@@ -401,6 +404,88 @@ class PlatformFlowTest {
     }
 
     // --- helpers ---
+
+    @Test
+    void certifierResultsDecideCertificationAndRequiredModeGatesDiscoveryAndGrants() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent certifier = newAgent(true, null);
+        TestAgent buyer = newAgent(true, null);
+
+        submitCertification(certifier, supplier, true).andExpect(status().isForbidden());
+        mvc.perform(put("/admin/organizations/" + certifier.orgId() + "/certifier").header("Authorization", "Bearer " + supplier.userToken())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"certifier\":true}")).andExpect(status().isForbidden());
+        mvc.perform(put("/admin/organizations/" + certifier.orgId() + "/certifier").header("Authorization", "Bearer " + adminToken)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"certifier\":true}")).andExpect(status().isOk());
+
+        // The verdict comes from the checks, not from the report's own "passed" flag.
+        JsonNode failed = body(submitCertification(certifier, supplier, false).andExpect(status().isOk()));
+        assertThat(failed.get("status").asText()).isEqualTo("FAILED");
+        assertThat(discoveredCertified(buyer, supplier)).isFalse();
+
+        JsonNode passed = body(submitCertification(certifier, supplier, true).andExpect(status().isOk()));
+        assertThat(passed.get("status").asText()).isEqualTo("PASSED");
+        assertThat(passed.get("checksPassed").asInt()).isEqualTo(2);
+        assertThat(passed.get("valid").asBoolean()).isTrue();
+        assertThat(discoveredCertified(buyer, supplier)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_events WHERE type = 'AGENT_CERTIFIED' AND provider_org_id = ?",
+                Long.class, supplier.orgId())).isEqualTo(1L);
+
+        // The certified organization can read its report; others cannot.
+        String certificationId = passed.get("id").asText();
+        mvc.perform(get("/certifications/" + certificationId).header("Authorization", "Bearer " + supplier.userToken()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.report.checks.length()").value(2));
+        mvc.perform(get("/certifications/" + certificationId).header("Authorization", "Bearer " + buyer.userToken()))
+                .andExpect(status().isForbidden());
+
+        TestAgent uncertified = newAgent(true, "quote.request");
+        org.springframework.test.util.ReflectionTestUtils.setField(certifications, "required", true);
+        try {
+            List<String> seenByBuyer = discovered(buyer.userToken());
+            assertThat(seenByBuyer).contains(supplier.agentId().toString()).doesNotContain(uncertified.agentId().toString());
+            assertThat(discovered(assertion(certifier))).contains(uncertified.agentId().toString());
+            requestGrant(buyer, uncertified, "quote.request", "10.00").andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("not certified")));
+            requestGrant(certifier, uncertified, "quote.request", "10.00").andExpect(status().isOk());
+            requestGrant(buyer, supplier, "quote.request", "10.00").andExpect(status().isOk());
+
+            mvc.perform(post("/admin/certifications/" + certificationId + "/revoke").header("Authorization", "Bearer " + supplier.userToken())
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"x\"}")).andExpect(status().isForbidden());
+            mvc.perform(post("/admin/certifications/" + certificationId + "/revoke").header("Authorization", "Bearer " + adminToken)
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"Replays accepted in production\"}"))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("REVOKED"));
+            requestGrant(buyer, supplier, "quote.request", "10.00").andExpect(status().isForbidden());
+        } finally {
+            org.springframework.test.util.ReflectionTestUtils.setField(certifications, "required", false);
+        }
+        mvc.perform(get("/agents/" + supplier.agentId() + "/certifications").header("Authorization", "Bearer " + buyer.userToken()))
+                .andExpect(jsonPath("$[0].status").value("REVOKED")).andExpect(jsonPath("$.length()").value(1));
+    }
+
+    private ResultActions submitCertification(TestAgent certifier, TestAgent target, boolean allPass) throws Exception {
+        ObjectNode report = mapper.createObjectNode().put("suiteVersion", "1.0.0").put("agentId", target.agentId().toString())
+                .put("capability", "quote.request").put("taskTypeVersion", 1).put("passed", true);
+        report.putArray("checks")
+                .add(mapper.createObjectNode().put("id", "card.a2a").put("passed", true))
+                .add(mapper.createObjectNode().put("id", "trust.replay").put("passed", allPass));
+        return mvc.perform(post("/certifications").header("Authorization", "Bearer " + assertion(certifier))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("agentId", target.agentId().toString()).set("report", report))));
+    }
+
+    private List<String> discovered(String bearer) throws Exception {
+        return body(mvc.perform(get("/discovery").param("capability", "quote.request")
+                .header("Authorization", "Bearer " + bearer)).andExpect(status().isOk())).findValuesAsText("agentId");
+    }
+
+    private boolean discoveredCertified(TestAgent caller, TestAgent target) throws Exception {
+        for (JsonNode d : body(mvc.perform(get("/discovery").param("capability", "quote.request")
+                .header("Authorization", "Bearer " + caller.userToken())))) {
+            if (d.get("agentId").asText().equals(target.agentId().toString())) {
+                return d.get("certified").asBoolean();
+            }
+        }
+        throw new AssertionError("Agent not discovered");
+    }
 
     private ResultActions grantWithApproval(TestAgent requester, TestAgent provider, String budget, String approvalId) throws Exception {
         return mvc.perform(post("/grants").header("Authorization", "Bearer " + assertion(requester))

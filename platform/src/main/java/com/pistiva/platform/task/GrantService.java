@@ -12,6 +12,7 @@ import com.pistiva.platform.agent.AgentRepository;
 import com.pistiva.platform.approval.Approval;
 import com.pistiva.platform.approval.ApprovalRepository;
 import com.pistiva.platform.audit.AuditService;
+import com.pistiva.platform.certification.CertificationService;
 import com.pistiva.platform.common.ApiException;
 import com.pistiva.platform.identity.PlatformKeyService;
 import com.pistiva.platform.org.Organization;
@@ -53,11 +54,13 @@ public class GrantService {
     private final TaskTypeService taskTypes;
     private final ApprovalRepository approvals;
     private final ObjectMapper mapper;
+    private final CertificationService certifications;
 
     public GrantService(AgentRepository agents, AgentCardRepository cards, OrganizationRepository orgs,
                         PolicyService policies, RateLimiter rateLimiter, TaskGrantRepository grants,
                         PlatformKeyService platformKeys, PlatformProperties props, AuditService audit,
-                        TaskTypeService taskTypes, ApprovalRepository approvals, ObjectMapper mapper) {
+                        TaskTypeService taskTypes, ApprovalRepository approvals, ObjectMapper mapper,
+                        CertificationService certifications) {
         this.agents = agents;
         this.cards = cards;
         this.orgs = orgs;
@@ -70,9 +73,9 @@ public class GrantService {
         this.taskTypes = taskTypes;
         this.approvals = approvals;
         this.mapper = mapper;
+        this.certifications = certifications;
     }
 
-    /** @param continueTaskId set to extend an existing task (e.g. a long clarification round) under a fresh grant */
     /**
      * @param continueTaskId set to extend an existing task (e.g. a long clarification round) under a fresh grant
      * @param approvalId     an approved approval backing a commitment above the approval threshold
@@ -137,6 +140,10 @@ public class GrantService {
         }
 
         int taskTypeVersion = capability.path("version").asInt(1);
+        if (certifications.required() && !certifications.isCertifierOrg(requester.orgId())
+                && !certifications.isCertified(provider.getId(), req.capability(), taskTypeVersion)) {
+            throw decision.deny("Provider is not certified for " + req.capability() + "@" + taskTypeVersion);
+        }
         boolean approvalRequired = req.budget().compareTo(rules.approvalThreshold()) > 0;
         Instant now = Instant.now();
         Instant expiresAt = now.plus(props.grantTtl());

@@ -44,6 +44,29 @@ export interface DiscoveredAgent {
   kid: string;
   signature: string;
   publicKey: string;
+  /** Whether the agent passed the conformance suite for the advertised version of the queried capability. */
+  certified?: boolean;
+}
+
+/** A conformance-suite result recorded on the platform; the latest per task-type version decides. */
+export interface Certification {
+  id: string;
+  agentId: string;
+  orgId: string;
+  taskType: string;
+  taskTypeVersion: number;
+  status: "PASSED" | "FAILED" | "REVOKED";
+  /** Passed, not expired and not revoked. */
+  valid: boolean;
+  suiteVersion: string;
+  checksPassed: number;
+  checksTotal: number;
+  reportHash: string;
+  certifierAgentId: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  revokedReason: string | null;
 }
 
 export interface AgentKeyView {

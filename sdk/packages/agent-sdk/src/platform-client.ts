@@ -9,6 +9,7 @@ import {
   type Approval,
   type AgentCard,
   type AgentStatus,
+  type Certification,
   type DiscoveredAgent,
   type IssuedGrant,
   type SignedReceipt,
@@ -70,9 +71,20 @@ export class PlatformClient implements PlatformLookup {
   }
 
   /** Returns only results whose signed card verifies locally. */
-  async discover(capability: string): Promise<DiscoveredAgent[]> {
-    const found = await this.call<DiscoveredAgent[]>("GET", `/discovery?capability=${encodeURIComponent(capability)}`);
+  async discover(capability: string, opts: { certifiedOnly?: boolean } = {}): Promise<DiscoveredAgent[]> {
+    const query = `capability=${encodeURIComponent(capability)}${opts.certifiedOnly ? "&certifiedOnly=true" : ""}`;
+    const found = await this.call<DiscoveredAgent[]>("GET", `/discovery?${query}`);
     return found.filter(verifyDiscoveredCard);
+  }
+
+  /** The latest conformance result per task-type version for an agent. */
+  async certifications(agentId: string): Promise<Certification[]> {
+    return this.call<Certification[]>("GET", `/agents/${agentId}/certifications`);
+  }
+
+  /** Records a conformance report; only agents of a certifier organization may call this. */
+  async submitCertification(agentId: string, report: unknown): Promise<Certification> {
+    return this.call<Certification>("POST", "/certifications", { agentId, report });
   }
 
   /** Pass `continueTaskId` to keep a long task (e.g. awaiting a clarification answer) alive under a fresh grant. */

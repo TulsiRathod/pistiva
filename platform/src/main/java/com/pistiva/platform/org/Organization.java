@@ -31,6 +31,8 @@ public class Organization {
     private Status status;
     @Column(name = "created_at")
     private Instant createdAt;
+    /** May run the conformance suite against other organizations' agents and record the result. */
+    private boolean certifier;
 
     protected Organization() {
     }
@@ -57,7 +59,9 @@ public class Organization {
     public String getVerificationToken() { return verificationToken; }
     public Status getStatus() { return status; }
     public Instant getCreatedAt() { return createdAt; }
+    public boolean isCertifier() { return certifier; }
 
     public void markVerified() { this.verificationStatus = VerificationStatus.VERIFIED; }
     public void setStatus(Status status) { this.status = status; }
+    public void setCertifier(boolean certifier) { this.certifier = certifier; }
 }
