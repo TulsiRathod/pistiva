@@ -42,6 +42,10 @@ public class TaskGrant {
     private UUID continuesGrant;
     @Column(name = "approval_id")
     private UUID approvalId;
+    @Column(name = "price_amount")
+    private BigDecimal priceAmount;
+    @Column(name = "price_currency")
+    private String priceCurrency;
 
     protected TaskGrant() {
     }
@@ -82,4 +86,13 @@ public class TaskGrant {
     public void attachApproval(UUID approvalId) { this.approvalId = approvalId; }
 
     public UUID getApprovalId() { return approvalId; }
+
+    /** The provider's per-task price from its card at issuance; charged only if the task completes. */
+    public void priceAt(BigDecimal amount, String currency) {
+        this.priceAmount = amount;
+        this.priceCurrency = currency;
+    }
+
+    public BigDecimal getPriceAmount() { return priceAmount; }
+    public String getPriceCurrency() { return priceCurrency; }
 }

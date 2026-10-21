@@ -146,6 +146,12 @@ Grafana at http://localhost:3000 (admin / admin) has the **Pistiva network** das
 - **Platform:** `GET /actuator/prometheus` needs `Authorization: Bearer $PISTIVA_METRICS_TOKEN` and is closed without it. Traces are exported when `MANAGEMENT_OTLP_TRACING_ENDPOINT` is set.
 - **Partner Kit:** `GET /metrics` needs `Authorization: Bearer $KIT_METRICS_TOKEN`. Traces are exported when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 
+## Usage and payouts
+
+A provider's per-task price (`price: { model: "per_task", amount, currency }` on its signed card) is fixed when the platform issues the grant. It is charged only when both parties countersign the task's **completed** receipt. Failed, rejected and canceled tasks are free, and a re-submitted receipt is never charged twice.
+- **Members** see what their organization earned as a provider and owes as a requester at `GET /orgs/{orgId}/usage?period=2026-10`, or on the console's **Usage** page.
+- **Platform admins** see each provider's monthly gross, the network fee (`PISTIVA_PLATFORM_FEE_PERCENT`, default 10%) and net at `GET /admin/payouts`, with a CSV export at `/admin/payouts.csv`. After paying a provider outside the platform, they record the payout with its reference. Each provider, month and currency can be paid only once.
+
 ## Platform signing key
 
 Grants and console tokens are signed with the platform's Ed25519 key. By default the key comes from `PISTIVA_SIGNING_KEY_SEED`, or from a generated development file. For production, keep it in Vault or OpenBao Transit, optionally HSM-backed, so the private key never leaves the key store:
@@ -164,6 +170,5 @@ Rotating the key with `vault write -f transit/keys/pistiva-platform/rotate` swit
 ## Not in this milestone
 
 - WebRTC direct connections with TURN relay fallback
-- Usage metering and payouts
 
 See the plan's "Next milestone".

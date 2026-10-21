@@ -60,6 +60,9 @@ pistiva:
   # Bearer token a Prometheus scraper sends to /actuator/prometheus; the endpoint is closed without one.
   metrics:
     token: ${PISTIVA_METRICS_TOKEN:}
+  billing:
+    # Share of each provider's per-task revenue the network keeps; the rest is paid out monthly.
+    platform-fee-percent: ${PISTIVA_PLATFORM_FEE_PERCENT:10}
   certification:
     # When true, discovery hides uncertified agents and grants to them are refused (certifiers excepted).
     required: ${PISTIVA_CERTIFICATION_REQUIRED:false}

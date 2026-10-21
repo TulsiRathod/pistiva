@@ -164,8 +164,45 @@ export interface Approval {
   used: boolean;
 }
 
+export interface UsageRecord {
+  taskId: string;
+  role: "provider" | "requester";
+  counterpartyOrgId: string;
+  counterpartyName: string;
+  capability: string;
+  amount: number;
+  currency: string;
+  connection: "direct" | "relayed";
+  completedAt: string;
+}
+
+export interface OrgUsage {
+  period: string;
+  totals: { role: "provider" | "requester"; currency: string; tasks: number; amount: number }[];
+  records: UsageRecord[];
+}
+
+export interface PayoutLine {
+  orgId: string;
+  orgName: string;
+  currency: string;
+  tasks: number;
+  gross: number;
+  fee: number;
+  net: number;
+  relayedTasks: number;
+  paid: { id: string; net: number; reference: string; paidBy: string; paidAt: string } | null;
+}
+
 export class Api {
   constructor(private readonly token: string | null) {}
+
+  /** Fetches a file (e.g. a CSV export) with the session's credentials. */
+  async download(path: string): Promise<Blob> {
+    const res = await fetch(API_BASE + path, { headers: this.token ? { Authorization: `Bearer ${this.token}` } : {} });
+    if (!res.ok) throw new ApiError(res.status, "http_error", `Download failed (${res.status})`);
+    return res.blob();
+  }
 
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await fetch(API_BASE + path, {
@@ -212,6 +249,9 @@ export class Api {
   adminOverview = (days = 14) => this.call<AdminOverview>("GET", `/admin/overview?days=${days}`);
   adminEvents = (limit = 25) => this.call<AdminEvent[]>("GET", `/admin/events?limit=${limit}`);
   adminOrgs = () => this.call<AdminOrg[]>("GET", "/admin/organizations");
+  usage = (orgId: string, period: string) => this.call<OrgUsage>("GET", `/orgs/${orgId}/usage?period=${period}`);
+  adminPayouts = (period: string) => this.call<PayoutLine[]>("GET", `/admin/payouts?period=${period}`);
+  markPaid = (p: { orgId: string; period: string; currency: string; reference: string }) => this.call<unknown>("POST", "/admin/payouts", p);
   adminCertifications = (limit = 50) => this.call<Certification[]>("GET", `/admin/certifications?limit=${limit}`);
   revokeCertification = (id: string, reason: string) => this.call<Certification>("POST", `/admin/certifications/${id}/revoke`, { reason });
   setCertifier = (orgId: string, certifier: boolean) => this.call<unknown>("PUT", `/admin/organizations/${orgId}/certifier`, { certifier });

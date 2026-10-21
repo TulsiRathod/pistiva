@@ -488,6 +488,57 @@ class PlatformFlowTest {
                 .doesNotContain(grant.get("taskId").asText());
     }
 
+    @Test
+    void completedTasksAreMeteredAtTheCardPriceAndPaidOutOnceNetOfTheFee() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        JsonNode done = body(requestGrant(buyer, supplier, "quote.request", "100.00").andExpect(status().isOk()));
+        submitRound(buyer, supplier, done, 1, "completed").andExpect(status().isOk());
+        // Re-submitting the same receipt does not charge twice; a failed task is never charged.
+        submitRound(buyer, supplier, done, 1, "completed").andExpect(status().isOk());
+        JsonNode failed = body(requestGrant(buyer, supplier, "quote.request", "100.00").andExpect(status().isOk()));
+        submitRound(buyer, supplier, failed, 1, "failed").andExpect(status().isOk());
+
+        String period = java.time.YearMonth.now(java.time.ZoneOffset.UTC).toString();
+        mvc.perform(get("/orgs/" + supplier.orgId() + "/usage").header("Authorization", "Bearer " + supplier.userToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.period").value(period))
+                .andExpect(jsonPath("$.totals[0].role").value("provider"))
+                .andExpect(jsonPath("$.totals[0].tasks").value(1))
+                .andExpect(jsonPath("$.totals[0].amount").value(10.00))
+                .andExpect(jsonPath("$.records[0].taskId").value(done.get("taskId").asText()));
+        mvc.perform(get("/orgs/" + buyer.orgId() + "/usage").header("Authorization", "Bearer " + buyer.userToken()))
+                .andExpect(jsonPath("$.totals[0].role").value("requester")).andExpect(jsonPath("$.totals[0].amount").value(10.00));
+        mvc.perform(get("/orgs/" + supplier.orgId() + "/usage").header("Authorization", "Bearer " + buyer.userToken()))
+                .andExpect(status().isForbidden());
+
+        mvc.perform(get("/admin/payouts").header("Authorization", "Bearer " + supplier.userToken())).andExpect(status().isForbidden());
+        JsonNode lines = body(mvc.perform(get("/admin/payouts").param("period", period).header("Authorization", "Bearer " + adminToken)));
+        JsonNode line = null;
+        for (JsonNode l : lines) {
+            if (l.get("orgId").asText().equals(supplier.orgId().toString())) {
+                line = l;
+            }
+        }
+        assertThat(line).isNotNull();
+        assertThat(line.get("gross").decimalValue()).isEqualByComparingTo("10.00");
+        assertThat(line.get("fee").decimalValue()).isEqualByComparingTo("1.00");
+        assertThat(line.get("net").decimalValue()).isEqualByComparingTo("9.00");
+        assertThat(line.get("paid").isNull()).isTrue();
+
+        String pay = json(mapper.createObjectNode().put("orgId", supplier.orgId().toString()).put("period", period)
+                .put("currency", "INR").put("reference", "NEFT-2026-10-0042"));
+        mvc.perform(post("/admin/payouts").header("Authorization", "Bearer " + adminToken).contentType(MediaType.APPLICATION_JSON).content(pay))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.net").value(9.00));
+        mvc.perform(post("/admin/payouts").header("Authorization", "Bearer " + adminToken).contentType(MediaType.APPLICATION_JSON).content(pay))
+                .andExpect(status().isConflict());
+        String csv = mvc.perform(get("/admin/payouts.csv").param("period", period).header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(csv).contains(supplier.orgId() + ",\"Org ").contains(",INR,1,0,10.00,1.00,9.00,\"NEFT-2026-10-0042\"");
+        mvc.perform(get("/admin/payouts").param("period", "October").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isBadRequest());
+    }
+
     private ResultActions submitCertification(TestAgent certifier, TestAgent target, boolean allPass) throws Exception {
         ObjectNode report = mapper.createObjectNode().put("suiteVersion", "1.0.0").put("agentId", target.agentId().toString())
                 .put("capability", "quote.request").put("taskTypeVersion", 1).put("passed", true);

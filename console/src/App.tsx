@@ -8,9 +8,10 @@ import { Landing, LogoMark } from "./pages/Landing.tsx";
 import { Login, type AuthMode } from "./pages/Login.tsx";
 import { Overview } from "./pages/Overview.tsx";
 import { PolicyPage } from "./pages/PolicyPage.tsx";
+import { Usage } from "./pages/Usage.tsx";
 
 const TOKEN_KEY = "pistiva.token";
-type Tab = "overview" | "agents" | "approvals" | "policy" | "audit" | "admin";
+type Tab = "overview" | "agents" | "approvals" | "policy" | "usage" | "audit" | "admin";
 
 function readToken(): string | null {
   try {
@@ -45,6 +46,11 @@ const ICONS: Record<Tab, ReactNode> = {
       <path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z" />
     </svg>
   ),
+  usage: (
+    <svg {...ic}>
+      <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
+    </svg>
+  ),
   audit: (
     <svg {...ic}>
       <path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" />
@@ -64,6 +70,7 @@ const TITLES: Record<Tab, [string, string]> = {
   agents: ["Agents", "Register agents, manage their keys and use the kill switch"],
   approvals: ["Approvals", "Commitments your agents can only make after a person approves them"],
   policy: ["Policy", "Rules the platform checks before every task grant"],
+  usage: ["Usage", "Priced tasks your organization completed as a provider or a requester"],
   audit: ["Audit log", "Grants, denials and signed receipts — metadata only"],
   admin: ["Admin dashboard", "Network health, verification queue and organization management"],
 };
@@ -121,7 +128,7 @@ export function App() {
   if (!me) return <main className="center muted">Loading…</main>;
 
   const membership = me.organizations.find((o) => o.orgId === orgId);
-  const tabs: Tab[] = ["overview", "agents", "approvals", "policy", "audit", ...(me.platformAdmin ? (["admin"] as Tab[]) : [])];
+  const tabs: Tab[] = ["overview", "agents", "approvals", "policy", "usage", "audit", ...(me.platformAdmin ? (["admin"] as Tab[]) : [])];
   const [title, subtitle] = TITLES[tab];
 
   return (
@@ -185,6 +192,7 @@ export function App() {
         {tab === "agents" && membership && <Agents api={api} orgId={membership.orgId} />}
         {tab === "approvals" && membership && <Approvals api={api} orgId={membership.orgId} role={membership.role} />}
         {tab === "policy" && membership && <PolicyPage api={api} orgId={membership.orgId} role={membership.role} />}
+        {tab === "usage" && membership && <Usage api={api} orgId={membership.orgId} />}
         {tab === "audit" && membership && <Audit api={api} orgId={membership.orgId} />}
       </main>
     </div>

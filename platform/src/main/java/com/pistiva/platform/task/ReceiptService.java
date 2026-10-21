@@ -6,6 +6,7 @@ import com.pistiva.platform.agent.AgentKey;
 import com.pistiva.platform.agent.AgentKeyRepository;
 import com.pistiva.platform.agent.AgentRepository;
 import com.pistiva.platform.audit.AuditService;
+import com.pistiva.platform.billing.BillingService;
 import com.pistiva.platform.common.ApiException;
 import com.pistiva.platform.common.Ed25519;
 import com.pistiva.platform.common.Jcs;
@@ -40,15 +41,17 @@ public class ReceiptService {
     private final AgentKeyRepository keys;
     private final AuditService audit;
     private final PlatformMetrics metrics;
+    private final BillingService billing;
 
     public ReceiptService(TaskGrantRepository grants, TaskReceiptRepository receipts, AgentRepository agents,
-                          AgentKeyRepository keys, AuditService audit, PlatformMetrics metrics) {
+                          AgentKeyRepository keys, AuditService audit, PlatformMetrics metrics, BillingService billing) {
         this.grants = grants;
         this.receipts = receipts;
         this.agents = agents;
         this.keys = keys;
         this.audit = audit;
         this.metrics = metrics;
+        this.billing = billing;
     }
 
     public record SignedReceipt(JsonNode receipt, String providerKid, String providerSignature,
@@ -113,6 +116,10 @@ public class ReceiptService {
             sinceFirstGrant = Duration.between(first, Instant.now());
         }
         metrics.round(grant.getCapability(), state, terminal, sinceFirstGrant);
+        if ("completed".equals(state)) {
+            // Both parties signed the receipt, including how they were connected.
+            billing.meterCompletedTask(taskId, r.path("connection").asText("direct"));
+        }
 
         Agent requester = agents.findById(grant.getRequesterAgentId()).orElseThrow();
         Agent provider = agents.findById(grant.getProviderAgentId()).orElseThrow();

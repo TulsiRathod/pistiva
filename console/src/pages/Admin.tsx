@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import type { AdminEvent, AdminOrg, Api, Certification, DayActivity } from "../api.ts";
+import type { AdminEvent, AdminOrg, Api, Certification, DayActivity, PayoutLine } from "../api.ts";
+import { currentPeriod } from "./Usage.tsx";
 import { useAction, useAsync } from "../useAsync.ts";
 import { CertBadge } from "./Agents.tsx";
 
@@ -90,6 +91,8 @@ export function Admin({ api }: { api: Api }) {
         </div>
         <EventFeed events={events.data ?? []} />
       </section>
+
+      <Payouts api={api} busy={action.busy} act={act} />
 
       <CertificationTable certs={certs.data ?? []} orgs={orgs.data ?? []} busy={action.busy} act={act} api={api} />
 
@@ -263,6 +266,7 @@ const EVENT_LABELS: Record<string, [string, string]> = {
   CERTIFICATION_FAILED: ["Certification failed", "chip chip-bad"],
   CERTIFICATION_REVOKED: ["Certification revoked", "chip chip-warn"],
   ORG_CERTIFIER_CHANGED: ["Certifier", "chip"],
+  PAYOUT_RECORDED: ["Payout", "chip chip-green"],
 };
 
 function EventFeed({ events }: { events: AdminEvent[] }) {
@@ -396,6 +400,100 @@ function OrgTable({ orgs, busy, act, api }: { orgs: AdminOrg[]; busy: boolean; a
           </tbody>
         </table>
       </div>
+    </section>
+  );
+}
+
+/** What each provider is owed for a month, net of the network fee, and recorded payouts. */
+function Payouts({ api, busy, act }: { api: Api; busy: boolean; act: (fn: () => Promise<unknown>) => Promise<unknown> | void }) {
+  const [period, setPeriod] = useState(currentPeriod);
+  const lines = useAsync(() => api.adminPayouts(period), [api, period]);
+  const [error, setError] = useState<string>();
+
+  async function exportCsv() {
+    try {
+      const url = URL.createObjectURL(await api.download(`/admin/payouts.csv?period=${period}`));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `pistiva-payouts-${period}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  function pay(l: PayoutLine) {
+    const reference = window.prompt(`Payment reference for ${l.net.toFixed(2)} ${l.currency} to ${l.orgName} (bank transfer id, etc.)`);
+    if (reference?.trim()) Promise.resolve(act(() => api.markPaid({ orgId: l.orgId, period, currency: l.currency, reference: reference.trim() }))).then(() => lines.reload());
+  }
+
+  return (
+    <section className="card">
+      <div className="row">
+        <h2>Payouts</h2>
+        <span className="spacer" />
+        <input type="month" value={period} max={currentPeriod()} onChange={(e) => e.target.value && setPeriod(e.target.value)} aria-label="Month" />
+        <button className="small" onClick={exportCsv} disabled={!lines.data?.length}>
+          Export CSV
+        </button>
+      </div>
+      {(lines.error || error) && <p className="error">{lines.error ?? error}</p>}
+      {lines.data?.length === 0 ? (
+        <p className="muted">No priced tasks completed in {period}.</p>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th className="num">Tasks</th>
+                <th className="num">Gross</th>
+                <th className="num">Fee</th>
+                <th className="num">Net</th>
+                <th>Status</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {lines.data?.map((l) => (
+                <tr key={`${l.orgId}-${l.currency}`}>
+                  <td>
+                    <strong>{l.orgName}</strong>
+                  </td>
+                  <td className="num">
+                    {l.tasks}
+                    {l.relayedTasks > 0 && <span className="muted"> ({l.relayedTasks} relayed)</span>}
+                  </td>
+                  <td className="num">
+                    {l.gross.toFixed(2)} {l.currency}
+                  </td>
+                  <td className="num muted">{l.fee.toFixed(2)}</td>
+                  <td className="num">
+                    <strong>{l.net.toFixed(2)}</strong>
+                  </td>
+                  <td>
+                    {l.paid ? (
+                      <span className="badge ok" title={`${l.paid.reference} · ${l.paid.paidBy}`}>
+                        PAID {new Date(l.paid.paidAt).toLocaleDateString()}
+                      </span>
+                    ) : (
+                      <span className="badge warn">DUE</span>
+                    )}
+                  </td>
+                  <td className="actions">
+                    {!l.paid && (
+                      <button className="small" disabled={busy} onClick={() => pay(l)}>
+                        Record payout
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }

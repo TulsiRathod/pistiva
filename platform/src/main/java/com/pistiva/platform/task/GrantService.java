@@ -12,6 +12,7 @@ import com.pistiva.platform.agent.AgentRepository;
 import com.pistiva.platform.approval.Approval;
 import com.pistiva.platform.approval.ApprovalRepository;
 import com.pistiva.platform.audit.AuditService;
+import com.pistiva.platform.billing.BillingService;
 import com.pistiva.platform.certification.CertificationService;
 import com.pistiva.platform.common.ApiException;
 import com.pistiva.platform.identity.PlatformKeyService;
@@ -175,6 +176,10 @@ public class GrantService {
                 throw decision.denyNeedsApproval("Approval has already been used");
             }
             pending.attachApproval(approval.getId());
+        }
+        BillingService.Price price = BillingService.perTaskPrice(capability);
+        if (price != null) {
+            pending.priceAt(price.amount(), price.currency());
         }
         TaskGrant grant = grants.save(pending);
 
