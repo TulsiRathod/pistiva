@@ -1,5 +1,6 @@
 import type { DiscoveredAgent, SignedReceipt, TaskState } from "@pistiva/agent-sdk";
-import type { AuditSink, NonceStore, StoredTask, TaskStore } from "@pistiva/gateway";
+import type { A2ATask } from "@pistiva/agent-sdk";
+import type { AuditSink, NonceStore, RoundStore, StoredTask, TaskStore } from "@pistiva/gateway";
 import type { DraftOrder, DraftStore } from "@pistiva/procurement";
 import type { Db } from "./db.ts";
 
@@ -280,6 +281,25 @@ export class PgNonceStore implements NonceStore {
   /** Expired nonces can no longer be replayed (the envelope would be rejected as expired). */
   async prune(): Promise<number> {
     const { rowCount } = await this.db.query("DELETE FROM gateway_nonces WHERE expires_at < now() - interval '5 minutes'");
+    return rowCount ?? 0;
+  }
+}
+
+/** Replies to rounds, shared by every replica of the node; entries older than two days are pruned. */
+export class PgRoundStore implements RoundStore {
+  constructor(private readonly db: Db) {}
+
+  async get(key: string) {
+    const { rows } = await this.db.query("SELECT body_hash, task FROM gateway_rounds WHERE key = $1", [key]);
+    return rows[0] ? { bodyHash: rows[0].body_hash as string, task: rows[0].task as A2ATask } : undefined;
+  }
+
+  async put(key: string, bodyHash: string, task: A2ATask): Promise<void> {
+    await this.db.query("INSERT INTO gateway_rounds (key, body_hash, task) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING", [key, bodyHash, JSON.stringify(task)]);
+  }
+
+  async prune(): Promise<number> {
+    const { rowCount } = await this.db.query("DELETE FROM gateway_rounds WHERE created_at < now() - interval '2 days'");
     return rowCount ?? 0;
   }
 }

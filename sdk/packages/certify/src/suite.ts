@@ -105,7 +105,9 @@ export async function runConformance(opts: ConformanceOptions): Promise<Conforma
   if (version === undefined) throw new Error(`Agent ${provider.agentId} does not advertise ${capability}`);
   const sample = opts.sample ?? DEFAULT_SAMPLES[capability];
   if (!sample) throw new Error(`No sample request for ${capability}; pass one the partner can complete`);
-  const spend = opts.spend ?? { budget: "1.00", currency: "INR" };
+  // The budget must cover the provider's advertised per-task price, or the platform refuses the grant.
+  const price = provider.card.capabilities.find((c) => c.name === capability)?.price as { model?: string; amount?: string; currency?: string } | undefined;
+  const spend = opts.spend ?? (price?.model === "per_task" && price.amount && price.currency ? { budget: price.amount, currency: price.currency } : { budget: "1.00", currency: "INR" });
   const timeoutMs = opts.timeoutMs ?? 15_000;
   const contracts = new ContractRegistry(platform);
   const openTasks = new Set<string>();
@@ -316,7 +318,9 @@ export async function runConformance(opts: ConformanceOptions): Promise<Conforma
     const b = await rpc("message/send", { message: signed(g, sample, { idempotencyKey: key }).message });
     expect(b.result, `the retry was rejected: ${b.error?.message}`);
     expect(b.result.status.state === a.result.status.state, "the retry got a different state");
-    expect(JSON.stringify(b.result.status.message?.parts) === JSON.stringify(a.result.status.message?.parts), "the retry got a different reply");
+    // Compare canonically: a provider that stores replies in a database may return the same JSON with keys reordered.
+    const canon = (v: unknown) => Buffer.from(canonicalBytes((v ?? null) as object)).toString("base64");
+    expect(canon(b.result.status.message?.parts) === canon(a.result.status.message?.parts), "the retry got a different reply");
     const c = await rpc("message/send", { message: signed(g, { ...sample, "pistiva.certify.variant": randomUUID() }, { idempotencyKey: key }).message });
     return expectError(c, [RpcErrors.conflict], "A reused idempotency key with a different body");
   });

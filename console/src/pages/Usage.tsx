@@ -10,6 +10,21 @@ export function currentPeriod(): string {
 export function Usage({ api, orgId }: { api: Api; orgId: string }) {
   const [period, setPeriod] = useState(currentPeriod);
   const usage = useAsync(() => api.usage(orgId, period), [api, orgId, period]);
+  const [csvError, setCsvError] = useState<string>();
+
+  async function exportCsv() {
+    try {
+      const url = URL.createObjectURL(await api.download(`/orgs/${orgId}/usage.csv?period=${period}`));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `pistiva-usage-${period}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setCsvError((e as Error).message);
+    }
+  }
+
   const earned = usage.data?.totals.filter((t) => t.role === "provider") ?? [];
   const owed = usage.data?.totals.filter((t) => t.role === "requester") ?? [];
 
@@ -20,8 +35,12 @@ export function Usage({ api, orgId }: { api: Api; orgId: string }) {
           <span className="muted">Month</span>
           <input type="month" value={period} max={currentPeriod()} onChange={(e) => e.target.value && setPeriod(e.target.value)} />
         </label>
+        <span className="spacer" />
+        <button className="small" onClick={exportCsv} disabled={!usage.data?.records.length}>
+          Export CSV
+        </button>
       </div>
-      {usage.error && <p className="error">{usage.error}</p>}
+      {(usage.error || csvError) && <p className="error">{usage.error ?? csvError}</p>}
       <div className="stat-grid">
         <Totals label="Earned as provider" totals={earned} hint="Before the network fee; paid out monthly" />
         <Totals label="Owed as requester" totals={owed} hint="Completed tasks only; failed tasks are free" />

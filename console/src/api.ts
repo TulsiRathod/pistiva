@@ -70,6 +70,32 @@ export interface Policy {
   approvalThreshold: string | number;
   currency: string;
   rateLimitPerMinute: number;
+  /** Capabilities that commit the organization; null/absent means the default (order.confirm). */
+  commitCapabilities?: string[] | null;
+  /** The person who registered an agent may not approve that agent's commitments. */
+  requireSeparateApprover?: boolean | null;
+}
+
+export interface Webhook {
+  id: string;
+  orgId: string;
+  url: string;
+  events: string[];
+  active: boolean;
+  createdAt: string;
+  /** Only present in the response that creates the webhook. */
+  secret?: string | null;
+}
+
+export interface WebhookDelivery {
+  id: number;
+  eventType: string;
+  attempts: number;
+  lastStatus: number | null;
+  lastError: string | null;
+  deliveredAt: string | null;
+  nextAttemptAt: string;
+  createdAt: string;
 }
 
 export interface AuditEvent {
@@ -249,6 +275,11 @@ export class Api {
   adminOverview = (days = 14) => this.call<AdminOverview>("GET", `/admin/overview?days=${days}`);
   adminEvents = (limit = 25) => this.call<AdminEvent[]>("GET", `/admin/events?limit=${limit}`);
   adminOrgs = () => this.call<AdminOrg[]>("GET", "/admin/organizations");
+  webhooks = (orgId: string) => this.call<Webhook[]>("GET", `/orgs/${orgId}/webhooks`);
+  webhookEventTypes = () => this.call<string[]>("GET", "/webhooks/event-types").then((t) => [...t].sort((a, b) => (a === "*" ? -1 : b === "*" ? 1 : a.localeCompare(b))));
+  createWebhook = (orgId: string, w: { url: string; events: string[] }) => this.call<Webhook>("POST", `/orgs/${orgId}/webhooks`, w);
+  deleteWebhook = (orgId: string, id: string) => this.call<unknown>("DELETE", `/orgs/${orgId}/webhooks/${id}`);
+  webhookDeliveries = (orgId: string, id: string) => this.call<WebhookDelivery[]>("GET", `/orgs/${orgId}/webhooks/${id}/deliveries`);
   usage = (orgId: string, period: string) => this.call<OrgUsage>("GET", `/orgs/${orgId}/usage?period=${period}`);
   adminPayouts = (period: string) => this.call<PayoutLine[]>("GET", `/admin/payouts?period=${period}`);
   markPaid = (p: { orgId: string; period: string; currency: string; reference: string }) => this.call<unknown>("POST", "/admin/payouts", p);

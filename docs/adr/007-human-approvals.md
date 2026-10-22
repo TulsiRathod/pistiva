@@ -32,5 +32,5 @@ The team document (§5, §8, §13) requires that "a purchase cannot be committed
 ## Consequences
 
 - The approval is consumed when the grant is issued. If the confirm then fails, for example because the supplier is offline, the operator needs a new approval. That's simpler and safer than re-usable approvals.
-- Separation of duties isn't enforced yet: the person who owns the requesting agent may also approve. A policy flag for a second approver can come later.
+- Separation of duties is a policy option, off by default: with `requireSeparateApprover`, the user who registered the requesting agent (`agents.created_by`) cannot decide that agent's approvals, so a second person must. Agents registered before the column existed have no recorded creator and are not restricted.
 - Only `order.confirm` is a commitment today. New commitment task types are opted in through the policy, without code changes.

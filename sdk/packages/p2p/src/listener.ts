@@ -2,14 +2,17 @@ import type { AgentKeyPair, P2PSession } from "@pistiva/agent-sdk";
 import "@pistiva/gateway";
 import type { FastifyInstance } from "fastify";
 import { RTCPeerConnection, RTCSessionDescription } from "werift";
-import { answerSignature, connectionKind, gathered, MAX_MESSAGE_BYTES, toIceServers, trustedKeys, verifiedBy, type Signaling } from "./signaling.ts";
+import { answerSignature, connectionKind, FrameAssembler, gathered, toFrames, toIceServers, trustedKeys, verifiedBy, type Signaling } from "./signaling.ts";
 
 export interface PeerListenerOptions {
   platform: Signaling;
   keys: AgentKeyPair;
   /** The provider gateway; requests from the data channel are injected into it, so every check still runs. */
   app: FastifyInstance;
+  /** Pause between polls. The platform holds each poll for up to 20 s when nothing is waiting. */
   pollMs?: number;
+  /** How long the platform may hold a poll open; 0 for a plain poll. */
+  longPollSeconds?: number;
   forceRelay?: boolean;
   onError?(e: unknown): void;
 }
@@ -22,28 +25,38 @@ export interface PeerListenerOptions {
 export class PeerListener {
   private timer?: NodeJS.Timeout;
   private polling = false;
+  private running = false;
   private readonly seen = new Set<string>();
   private readonly connections = new Set<RTCPeerConnection>();
 
   constructor(private readonly opts: PeerListenerOptions) {}
 
   start(): void {
-    this.timer = setInterval(() => void this.poll(), this.opts.pollMs ?? 1000);
-    this.timer.unref?.();
+    this.running = true;
+    void (async () => {
+      while (this.running) {
+        await this.poll(this.opts.longPollSeconds ?? 20);
+        await new Promise<void>((r) => {
+          this.timer = setTimeout(r, this.opts.pollMs ?? 200);
+          this.timer.unref?.();
+        });
+      }
+    })();
   }
 
   async stop(): Promise<void> {
-    clearInterval(this.timer);
+    this.running = false;
+    clearTimeout(this.timer);
     for (const pc of this.connections) await pc.close().catch(() => undefined);
     this.connections.clear();
   }
 
   /** Handles every offer waiting for this agent. `start()` calls it on a timer. */
-  async poll(): Promise<void> {
+  async poll(waitSeconds = 0): Promise<void> {
     if (this.polling) return;
     this.polling = true;
     try {
-      for (const session of await this.opts.platform.pendingP2PSessions()) {
+      for (const session of await this.opts.platform.pendingP2PSessions(waitSeconds)) {
         if (this.seen.has(session.id)) continue;
         this.seen.add(session.id);
         await this.accept(session).catch((e) => this.opts.onError?.(e));
@@ -67,9 +80,12 @@ export class PeerListener {
     this.connections.add(pc);
     let kind: Promise<"direct" | "relayed"> | undefined;
     pc.onDataChannel.subscribe((channel) => {
+      const assembler = new FrameAssembler();
       channel.onMessage.subscribe((data) => {
+        const text = assembler.push(data.toString());
+        if (text === undefined) return;
         kind ??= connectionKind(pc);
-        void this.serve(channel, data.toString(), kind);
+        void this.serve(channel, text, kind);
       });
       channel.stateChanged.subscribe((s) => {
         if (s === "closed") {
@@ -101,15 +117,17 @@ export class PeerListener {
 
   private async serve(channel: { send(data: string): void }, text: string, kind: Promise<"direct" | "relayed">): Promise<void> {
     let id: string | null = null;
+    const reply = (message: string) => {
+      for (const frame of toFrames(message)) channel.send(frame);
+    };
     try {
-      if (Buffer.byteLength(text) > MAX_MESSAGE_BYTES) throw new Error("Message too large");
       const frame = JSON.parse(text) as { authorization?: string; body: string };
       id = (JSON.parse(frame.body) as { id?: string }).id ?? null;
       const connection = await kind;
       const res = await this.opts.app.handleRpc(JSON.parse(frame.body), frame.authorization, connection);
-      channel.send(JSON.stringify(res));
+      reply(JSON.stringify(res));
     } catch {
-      channel.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: "Internal error" } }));
+      reply(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: "Internal error" } }));
     }
   }
 }

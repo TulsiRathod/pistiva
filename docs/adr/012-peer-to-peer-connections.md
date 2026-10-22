@@ -21,7 +21,7 @@ Agents reach each other over HTTPS endpoints that every provider must expose pub
 
 ## Consequences
 
-- The data channel is limited to 60 KB per message. Larger requests go over HTTPS. Contract messages are far below that.
-- Each provider holds one polling loop against the platform (once per second) instead of a push channel. Signaling latency is therefore about a second, paid once per connection; channels are reused for a minute.
+- Messages are split into 16K-character frames and reassembled, up to 4 MB per message; anything larger goes over HTTPS. Incomplete messages are bounded (16 at a time) and duplicate or malformed frames are dropped.
+- Providers learn about offers by long polling: `GET /p2p/sessions/pending?waitSeconds=20` holds the request until an offer arrives, so an idle provider costs about three requests a minute and an offer is seen immediately. The platform parks no thread for it (`DeferredResult`), allows each agent three open waits and 2000 in total, and re-checks every half second. Requesters wait for the answer the same way.
 - Without a TURN server, two agents behind symmetric NATs fall back to HTTPS, which still needs the provider's public endpoint. TURN removes that need only for the data path; signaling already works without any inbound port.
 - The relay sees who talks to whom and how much, not what. Operators who want that hidden too can run their own TURN and set `forceRelay`.

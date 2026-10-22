@@ -199,6 +199,15 @@ class PlatformFlowTest {
     }
 
     @Test
+    void invoicingPackIsBundledAlongsideProcurement() throws Exception {
+        JsonNode types = body(mvc.perform(get("/task-types")).andExpect(status().isOk()));
+        assertThat(types.findValuesAsText("name")).contains("invoice.submit", "payment.status", "quote.request");
+        JsonNode invoice = body(mvc.perform(get("/task-types/invoice.submit/versions/1")).andExpect(status().isOk()));
+        assertThat(invoice.get("pack").asText()).isEqualTo("invoicing");
+        assertThat(invoice.get("messages").get("request").get("$defs").has("ref")).isTrue();
+    }
+
+    @Test
     void publishedTaskTypeVersionsAreImmutable() throws Exception {
         String pack = """
                 {"pack":"procurement","taskTypes":[{"name":"quote.request","version":1,"description":"changed",
@@ -363,7 +372,7 @@ class PlatformFlowTest {
             assertThat(listed.get(0).get("secret").isNull()).isTrue();
 
             requestGrant(buyer, supplier, "inventory.export", "1.00").andExpect(status().isForbidden()); // GRANT_DENIED
-            requestGrant(buyer, supplier, "quote.request", "1.00").andExpect(status().isOk());           // not subscribed
+            requestGrant(buyer, supplier, "quote.request", "20.00").andExpect(status().isOk());           // not subscribed
 
             assertThat(dispatcher.dispatchDue()).isEqualTo(1);
             assertThat(received).hasSize(1);                                 // first attempt got a 500
@@ -393,8 +402,8 @@ class PlatformFlowTest {
     void sweeperExpiresAbandonedTasksButNotFinishedOnes() throws Exception {
         TestAgent supplier = newAgent(true, "quote.request");
         TestAgent buyer = newAgent(true, null);
-        String abandoned = body(requestGrant(buyer, supplier, "quote.request", "1.00")).get("taskId").asText();
-        JsonNode finished = body(requestGrant(buyer, supplier, "quote.request", "1.00"));
+        String abandoned = body(requestGrant(buyer, supplier, "quote.request", "20.00")).get("taskId").asText();
+        JsonNode finished = body(requestGrant(buyer, supplier, "quote.request", "20.00"));
         submitRound(buyer, supplier, finished, 1, "completed").andExpect(status().isOk());
         jdbc.update("UPDATE task_grants SET expires_at = now() - interval '2 days' WHERE task_id IN (?, ?)",
                 UUID.fromString(abandoned), UUID.fromString(finished.get("taskId").asText()));
@@ -421,6 +430,13 @@ class PlatformFlowTest {
                 .contentType(MediaType.APPLICATION_JSON).content("{\"certifier\":true}")).andExpect(status().isForbidden());
         mvc.perform(put("/admin/organizations/" + certifier.orgId() + "/certifier").header("Authorization", "Bearer " + adminToken)
                 .contentType(MediaType.APPLICATION_JSON).content("{\"certifier\":true}")).andExpect(status().isOk());
+
+        // A report with no probe activity behind it is refused: the platform saw no grants for it.
+        submitCertification(certifier, supplier, true).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("probe grants")));
+        for (int i = 0; i < 5; i++) {
+            requestGrant(certifier, supplier, "quote.request", "20.00").andExpect(status().isOk());
+        }
 
         // The verdict comes from the checks, not from the report's own "passed" flag.
         JsonNode failed = body(submitCertification(certifier, supplier, false).andExpect(status().isOk()));
@@ -538,6 +554,11 @@ class PlatformFlowTest {
         String csv = mvc.perform(get("/admin/payouts.csv").param("period", period).header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         assertThat(csv).contains(supplier.orgId() + ",\"Org ").contains(",INR,1,0,10.00,1.00,9.00,\"NEFT-2026-10-0042\"");
+        String usageCsv = mvc.perform(get("/orgs/" + supplier.orgId() + "/usage.csv").header("Authorization", "Bearer " + supplier.userToken()))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(usageCsv).startsWith("task_id,completed_at,role").contains(done.get("taskId").asText()).contains(",provider,").contains(",10.00,INR");
+        mvc.perform(get("/orgs/" + supplier.orgId() + "/usage.csv").header("Authorization", "Bearer " + buyer.userToken()))
+                .andExpect(status().isForbidden());
         mvc.perform(get("/admin/payouts").param("period", "October").header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isBadRequest());
     }
@@ -563,9 +584,9 @@ class PlatformFlowTest {
                 .content(json(mapper.createObjectNode().put("providerAgentId", supplier.agentId().toString()).put("offer", "v=0 offer").put("signature", "sig-o"))))
                 .andExpect(status().isOk()));
         String id = session.get("id").asText();
-        JsonNode pending = body(mvc.perform(get("/p2p/sessions/pending").header("Authorization", "Bearer " + assertion(supplier))));
+        JsonNode pending = body(resolveAsync(get("/p2p/sessions/pending").header("Authorization", "Bearer " + assertion(supplier))));
         assertThat(pending.findValuesAsText("id")).contains(id);
-        assertThat(body(mvc.perform(get("/p2p/sessions/pending").header("Authorization", "Bearer " + assertion(stranger)))).findValuesAsText("id")).doesNotContain(id);
+        assertThat(body(resolveAsync(get("/p2p/sessions/pending").header("Authorization", "Bearer " + assertion(stranger)))).findValuesAsText("id")).doesNotContain(id);
 
         String answer = json(mapper.createObjectNode().put("answer", "v=0 answer").put("signature", "sig-a"));
         mvc.perform(post("/p2p/sessions/" + id + "/answer").header("Authorization", "Bearer " + assertion(buyer))
@@ -574,9 +595,28 @@ class PlatformFlowTest {
                 .contentType(MediaType.APPLICATION_JSON).content(answer)).andExpect(status().isOk());
         mvc.perform(post("/p2p/sessions/" + id + "/answer").header("Authorization", "Bearer " + assertion(supplier))
                 .contentType(MediaType.APPLICATION_JSON).content(answer)).andExpect(status().isNotFound());
-        mvc.perform(get("/p2p/sessions/" + id).header("Authorization", "Bearer " + assertion(buyer)))
+        resolveAsync(get("/p2p/sessions/" + id).header("Authorization", "Bearer " + assertion(buyer)))
                 .andExpect(jsonPath("$.answer").value("v=0 answer")).andExpect(jsonPath("$.answerSignature").value("sig-a"));
         mvc.perform(get("/p2p/sessions/" + id).header("Authorization", "Bearer " + assertion(stranger))).andExpect(status().isNotFound());
+
+        // Long poll: a waiting provider is released as soon as an offer arrives, not after the full wait.
+        TestAgent waiting = newAgent(true, "quote.request");
+        java.util.concurrent.CompletableFuture<JsonNode> held = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try {
+                return body(resolveAsync(get("/p2p/sessions/pending").param("waitSeconds", "20")
+                        .header("Authorization", "Bearer " + assertion(waiting))));
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        Thread.sleep(800);
+        assertThat(held.isDone()).isFalse();
+        long started = System.nanoTime();
+        mvc.perform(post("/p2p/sessions").header("Authorization", "Bearer " + assertion(buyer)).contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("providerAgentId", waiting.agentId().toString()).put("offer", "v=0 offer2").put("signature", "s"))))
+                .andExpect(status().isOk());
+        assertThat(held.get(10, java.util.concurrent.TimeUnit.SECONDS).findValuesAsText("providerAgentId")).contains(waiting.agentId().toString());
+        assertThat((System.nanoTime() - started) / 1_000_000_000.0).isLessThan(5.0);
 
         TestAgent unverified = newAgent(false, "quote.request");
         mvc.perform(post("/p2p/sessions").header("Authorization", "Bearer " + assertion(buyer)).contentType(MediaType.APPLICATION_JSON)
@@ -584,9 +624,73 @@ class PlatformFlowTest {
                 .andExpect(status().isForbidden());
     }
 
+    /** Runs a request whose handler completes asynchronously (long polling) and returns the final response. */
+    private ResultActions resolveAsync(org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request) throws Exception {
+        org.springframework.test.web.servlet.MvcResult started = mvc.perform(request)
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.request().asyncStarted()).andReturn();
+        started.getAsyncResult(30_000);
+        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch(started)).andExpect(status().isOk());
+    }
+
+    @Test
+    void separateApproverPolicyKeepsTheAgentsRegistrantFromApprovingItsPurchases() throws Exception {
+        TestAgent supplier = newAgent(true, "order.confirm");
+        TestAgent buyer = newAgent(true, null);
+        JsonNode policy = body(mvc.perform(get("/orgs/" + buyer.orgId() + "/policy").header("Authorization", "Bearer " + buyer.userToken())));
+        ((ObjectNode) policy).putArray("allowedCapabilities").add("order.confirm");
+        ((ObjectNode) policy).put("requireSeparateApprover", true);
+        mvc.perform(put("/orgs/" + buyer.orgId() + "/policy").header("Authorization", "Bearer " + buyer.userToken())
+                .contentType(MediaType.APPLICATION_JSON).content(json(policy))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.requireSeparateApprover").value(true));
+
+        String approvalId = body(mvc.perform(post("/approvals").header("Authorization", "Bearer " + assertion(buyer))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("providerAgentId", supplier.agentId().toString())
+                        .put("capability", "order.confirm").put("reference", "DRAFT-9").put("amount", "20000.00").put("currency", "INR"))))
+                .andExpect(status().isOk())).get("id").asText();
+
+        // The owner registered the agent, so the owner cannot decide.
+        decide(buyer.userToken(), approvalId, "APPROVED", "ok").andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("different person")));
+
+        String approverToken = body(mvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("email", "approver-" + UUID.randomUUID() + "@example.com")
+                        .put("password", "correct-horse-battery").put("orgName", "Approver Org")
+                        .put("domain", "approver" + UUID.randomUUID().toString().substring(0, 8) + ".example.com"))))).get("accessToken").asText();
+        String approverEmail = body(mvc.perform(get("/me").header("Authorization", "Bearer " + approverToken))).get("email").asText();
+        mvc.perform(post("/orgs/" + buyer.orgId() + "/members").header("Authorization", "Bearer " + buyer.userToken())
+                .contentType(MediaType.APPLICATION_JSON).content(json(mapper.createObjectNode().put("email", approverEmail).put("role", "APPROVER"))))
+                .andExpect(status().isOk());
+        decide(approverToken, approvalId, "APPROVED", "Within budget").andExpect(status().isOk());
+    }
+
+    @Test
+    void repeatedFailedSignInsAreThrottledAndAGrantBelowTheProvidersPriceIsRefused() throws Exception {
+        TestAgent owner = newAgent(true, null);
+        String email = body(mvc.perform(get("/me").header("Authorization", "Bearer " + owner.userToken()))).get("email").asText();
+        String wrong = json(mapper.createObjectNode().put("email", email).put("password", "wrong-password"));
+        for (int i = 0; i < 10; i++) {
+            mvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content(wrong)).andExpect(status().isUnauthorized());
+        }
+        // Even the right password is refused until the window passes; another account is unaffected.
+        mvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content(wrong)).andExpect(status().isTooManyRequests());
+        mvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("email", email).put("password", "correct-horse-battery")))).andExpect(status().isTooManyRequests());
+        mvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("email", props.adminEmail()).put("password", props.adminPassword())))).andExpect(status().isOk());
+
+        // The test card prices quote.request at 10.00 INR per task.
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        requestGrant(buyer, supplier, "quote.request", "5.00").andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("exceeds the budget")));
+        requestGrant(buyer, supplier, "quote.request", "10.00").andExpect(status().isOk());
+    }
+
     private ResultActions submitCertification(TestAgent certifier, TestAgent target, boolean allPass) throws Exception {
         ObjectNode report = mapper.createObjectNode().put("suiteVersion", "1.0.0").put("agentId", target.agentId().toString())
-                .put("capability", "quote.request").put("taskTypeVersion", 1).put("passed", true);
+                .put("capability", "quote.request").put("taskTypeVersion", 1).put("passed", true)
+                .put("startedAt", Instant.now().minusSeconds(120).toString());
         report.putArray("checks")
                 .add(mapper.createObjectNode().put("id", "card.a2a").put("passed", true))
                 .add(mapper.createObjectNode().put("id", "trust.replay").put("passed", allPass));

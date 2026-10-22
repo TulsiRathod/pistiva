@@ -1,0 +1,83 @@
+{
+  "pack": "invoicing",
+  "version": 1,
+  "description": "Invoices and payment status between a supplier and the buying organization that owes it.",
+  "vocabulary": ["invoiceRef", "orderRef", "amount", "currency", "date", "paymentTerms"],
+  "$defs": {
+    "ref": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9._/-]+$" },
+    "amount": { "type": "string", "pattern": "^\\d{1,15}(\\.\\d{1,2})?$" },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "paymentTerms": { "enum": ["NET15", "NET30", "NET45", "NET60", "ADVANCE", "COD"] }
+  },
+  "taskTypes": [
+    {
+      "name": "invoice.submit",
+      "version": 1,
+      "description": "A supplier submits an invoice for a delivered order. The buyer's agent acknowledges it, or disputes it with a reason. Submitting does not commit the buyer to pay.",
+      "direction": "requester_to_provider",
+      "cardinality": "one_to_one",
+      "handler": "invoice.submit",
+      "extension": false,
+      "messages": {
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["invoiceRef", "orderRef", "amount", "currency", "issuedOn"],
+          "properties": {
+            "invoiceRef": { "$ref": "#/$defs/ref" },
+            "orderRef": { "$ref": "#/$defs/ref" },
+            "amount": { "$ref": "#/$defs/amount" },
+            "currency": { "$ref": "#/$defs/currency" },
+            "issuedOn": { "$ref": "#/$defs/date" },
+            "terms": { "$ref": "#/$defs/paymentTerms" },
+            "note": { "type": "string", "maxLength": 500 }
+          }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["invoiceRef", "status"],
+          "properties": {
+            "invoiceRef": { "$ref": "#/$defs/ref" },
+            "status": { "enum": ["received", "disputed"] },
+            "dueOn": { "$ref": "#/$defs/date" },
+            "reason": { "type": "string", "maxLength": 500 }
+          }
+        }
+      }
+    },
+    {
+      "name": "payment.status",
+      "version": 1,
+      "description": "A supplier asks whether and when an invoice it submitted will be paid.",
+      "direction": "requester_to_provider",
+      "cardinality": "one_to_one",
+      "handler": "payment.status",
+      "extension": false,
+      "messages": {
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["invoiceRef"],
+          "properties": {
+            "invoiceRef": { "$ref": "#/$defs/ref" }
+          }
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["invoiceRef", "status"],
+          "properties": {
+            "invoiceRef": { "$ref": "#/$defs/ref" },
+            "status": { "enum": ["unknown", "received", "scheduled", "paid", "disputed"] },
+            "payOn": { "$ref": "#/$defs/date" },
+            "paidOn": { "$ref": "#/$defs/date" },
+            "amount": { "$ref": "#/$defs/amount" },
+            "currency": { "$ref": "#/$defs/currency" }
+          }
+        }
+      }
+    }
+  ]
+}

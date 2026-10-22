@@ -106,6 +106,11 @@ public class WebhookService {
         if (uri.getHost() == null || !(https || (allowHttp && "http".equals(uri.getScheme())))) {
             throw new ApiException.BadRequest("Webhook URL must be https");
         }
+        // allow-http is a development switch; it also lets webhooks reach local test servers.
+        String problem = allowHttp ? null : UrlGuard.problem(uri);
+        if (problem != null) {
+            throw new ApiException.BadRequest(problem);
+        }
     }
 
     private static List<String> toList(Array a) throws java.sql.SQLException {

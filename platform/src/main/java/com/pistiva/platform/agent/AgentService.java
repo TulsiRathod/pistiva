@@ -70,7 +70,7 @@ public class AgentService {
     public Agent create(UserPrincipal user, UUID orgId, String name, String version, String endpointUrl) {
         orgService.requireRole(user, orgId, Role.MANAGE_AGENTS);
         validateEndpoint(endpointUrl);
-        Agent agent = agents.save(new Agent(orgId, name, version, endpointUrl));
+        Agent agent = agents.save(new Agent(orgId, name, version, endpointUrl).createdBy(user.userId()));
         audit.record("AGENT_CREATED", "user:" + user.userId(), orgId, Map.of("agentId", agent.getId()));
         return agent;
     }

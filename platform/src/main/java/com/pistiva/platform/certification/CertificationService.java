@@ -51,11 +51,13 @@ public class CertificationService {
     private final PlatformMetrics metrics;
     private final Duration validity;
     private volatile boolean required;
+    private final int minProbeGrants;
 
     public CertificationService(JdbcTemplate jdbc, AgentRepository agents, OrganizationRepository orgs, OrgService orgService,
                                 TaskTypeService taskTypes, AuditService audit, ObjectMapper mapper, PlatformMetrics metrics,
                                 @Value("${pistiva.certification.validity:365d}") Duration validity,
-                                @Value("${pistiva.certification.required:false}") boolean required) {
+                                @Value("${pistiva.certification.required:false}") boolean required,
+                                @Value("${pistiva.certification.min-probe-grants:5}") int minProbeGrants) {
         this.jdbc = jdbc;
         this.agents = agents;
         this.orgs = orgs;
@@ -65,6 +67,7 @@ public class CertificationService {
         this.mapper = mapper;
         this.metrics = metrics;
         this.validity = validity;
+        this.minProbeGrants = minProbeGrants;
         this.required = required;
     }
 
@@ -102,6 +105,7 @@ public class CertificationService {
         if (suiteVersion.isBlank() || !checks.isArray() || checks.isEmpty()) {
             throw new ApiException.BadRequest("report needs a suiteVersion and a non-empty checks array");
         }
+        requireProbeActivity(certifier.agentId(), agentId, report.path("startedAt").asText(""));
         int passed = 0;
         for (JsonNode check : checks) {
             if (check.path("passed").asBoolean(false)) {
@@ -131,6 +135,30 @@ public class CertificationService {
                 certifier.orgId(), target.getOrgId(), null, null, details);
         metrics.certification(status.name());
         return get(id, true);
+    }
+
+    /**
+     * The platform cannot re-run the probes (task data never passes through it), but it can check that
+     * they happened: the suite requests a grant from the agent for each probe, and the platform issued
+     * those. A report with no matching grant activity was not produced by running the suite.
+     */
+    private void requireProbeActivity(UUID certifierAgentId, UUID targetAgentId, String startedAt) {
+        Instant start;
+        try {
+            start = Instant.parse(startedAt);
+        } catch (java.time.format.DateTimeParseException e) {
+            throw new ApiException.BadRequest("report.startedAt must be the time the suite started (ISO-8601)");
+        }
+        if (start.isBefore(Instant.now().minus(Duration.ofHours(1)))) {
+            throw new ApiException.BadRequest("The suite ran more than an hour ago; run it again");
+        }
+        Integer grants = jdbc.queryForObject(
+                "SELECT count(*) FROM task_grants WHERE requester_agent_id = ? AND provider_agent_id = ? AND created_at >= ?",
+                Integer.class, certifierAgentId, targetAgentId, Timestamp.from(start.minusSeconds(5)));
+        if (grants == null || grants < minProbeGrants) {
+            throw new ApiException.BadRequest("Only " + (grants == null ? 0 : grants) + " probe grants were issued to this agent since the suite started; at least "
+                    + minProbeGrants + " are expected");
+        }
     }
 
     /** The latest result per task-type version for one agent. */

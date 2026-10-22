@@ -28,6 +28,8 @@ public class Agent {
     private Status status;
     @Column(name = "created_at")
     private Instant createdAt;
+    @Column(name = "created_by")
+    private UUID createdBy;
 
     protected Agent() {
     }
@@ -49,6 +51,12 @@ public class Agent {
     public String getEndpointUrl() { return endpointUrl; }
     public Status getStatus() { return status; }
     public Instant getCreatedAt() { return createdAt; }
+    public UUID getCreatedBy() { return createdBy; }
+
+    public Agent createdBy(UUID userId) {
+        this.createdBy = userId;
+        return this;
+    }
 
     public boolean isActive() { return status == Status.ACTIVE; }
 

@@ -162,6 +162,19 @@ const MIGRATIONS: { version: number; sql: string }[] = [
       CREATE INDEX gateway_nonces_expiry ON gateway_nonces (expires_at);
     `,
   },
+  {
+    version: 6,
+    sql: `
+      -- The signed reply to each round, so a retry reaching any replica gets the original answer.
+      CREATE TABLE gateway_rounds (
+        key        TEXT PRIMARY KEY,
+        body_hash  TEXT NOT NULL,
+        task       JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX gateway_rounds_created ON gateway_rounds (created_at);
+    `,
+  },
 ];
 
 export type Db = pg.Pool;

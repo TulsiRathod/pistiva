@@ -4,13 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import type { DiscoveredAgent, PlatformClient } from "@pistiva/agent-sdk";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakePlatform, type FakeAgent } from "../../../packages/gateway/test/fake-platform.ts";
 import type { KitConfig } from "../server/config.ts";
 import { createPool, migrate, type Db } from "../server/db.ts";
 import { JobQueue } from "../server/jobs.ts";
 import { createKit, type Kit } from "../server/kit.ts";
-import { PgNonceStore } from "../server/repo.ts";
+import { PgNonceStore, PgRoundStore } from "../server/repo.ts";
+import { buildEnvelope, dataPart, PISTIVA_TRUST, type A2AMessage, type AgentCard } from "@pistiva/agent-sdk";
+import { createProviderGateway } from "@pistiva/gateway";
+import { randomUUID } from "node:crypto";
 
 const PASSWORD = "operator-password-1";
 
@@ -182,6 +185,42 @@ describe("Partner Kit reliability", { timeout: 180_000 }, () => {
     expect((await db.query("SELECT nonce FROM gateway_nonces")).rows).toEqual([{ nonce: "agent-1:n-2" }]);
   });
 
+  it("answers a retried round from the original reply even when it reaches another replica", async () => {
+    const db = await database("rel_rounds");
+    await migrate(db);
+    let executions = 0;
+    const card: AgentCard = { agentId: supplierAgent.agentId, orgId: supplierAgent.orgId, kid: supplierAgent.kid, name: "S", version: "1", endpoint: "http://x", protocols: ["a2a/0.3"], capabilities: [{ name: "quote.request", version: 1, description: "q" }], issuedAt: 1 };
+    const replica = () =>
+      createProviderGateway({
+        agentId: supplierAgent.agentId,
+        kid: supplierAgent.kid,
+        keys: supplierAgent.keys,
+        platform,
+        card,
+        roundStore: new PgRoundStore(db),
+        nonceStore: new PgNonceStore(db),
+        capabilities: { "quote.request": { handle: () => ({ sku: "X", available: true, unitPrice: "4.20", currency: "INR", validUntil: "2026-11-01", executions: ++executions }) } },
+      });
+    const [a, b] = [replica(), replica()];
+    const grant = platform.issueGrant({ requester: buyerAgent, provider: supplierAgent, capability: "quote.request" });
+    const send = (app: typeof a, idempotencyKey: string, qty: number) => {
+      const parts = [dataPart({ sku: "X", qty }, "request")];
+      const env = buildEnvelope({ from: buyerAgent.agentId, to: supplierAgent.agentId, kid: buyerAgent.kid, taskId: grant.taskId, capability: "quote.request", idempotencyKey, body: parts, grant: grant.grant, kind: "request", round: 1 }, buyerAgent.keys);
+      const message: A2AMessage = { kind: "message", messageId: env.header.msgId, role: "user", parts, metadata: { [PISTIVA_TRUST]: { header: env.header, signature: env.signature } } };
+      return app.handleRpc({ jsonrpc: "2.0", id: 1, method: "message/send", params: { message } }, undefined) as Promise<{ result?: unknown; error?: { message: string } }>;
+    };
+    const key = randomUUID();
+    const first = await send(a, key, 5);
+    const retry = await send(b, key, 5);
+    expect(first.result).toBeDefined();
+    expect(retry.result).toEqual(first.result);
+    expect(executions).toBe(1);
+    // The same key with a different body is refused by whichever replica sees it.
+    expect((await send(a, key, 6)).error?.message).toContain("Idempotency key reused");
+    await a.close();
+    await b.close();
+  });
+
   it("keeps a supplier's question answerable across a buyer node restart", async () => {
     const first = await startBuyer();
     await ui(first, "/ui/outbound", { capability: "quote.request", request: { sku: "NUT-M8", qty: 40000 }, budget: "50.00", currency: "INR" });
@@ -207,8 +246,14 @@ describe("Partner Kit reliability", { timeout: 180_000 }, () => {
     await b.kit.jobs.enqueue("questions.expire");
     await b.kit.jobs.drain();
 
-    const task = (await ui<{ task: { state: string; summary: string } }>(b, `/ui/tasks/${q.taskId}`)).task;
-    expect(task).toMatchObject({ state: "canceled", summary: "No answer within 24 hours" });
+    // A maintenance run may already hold this job, so wait for its effect instead of assuming drain() finished it.
+    await vi.waitFor(
+      async () => {
+        const task = (await ui<{ task: { state: string; summary: string } }>(b, `/ui/tasks/${q.taskId}`)).task;
+        expect(task).toMatchObject({ state: "canceled", summary: "No answer within 24 hours" });
+      },
+      { timeout: 15_000, interval: 200 },
+    );
     const atSupplier = (await supplierDb.query("SELECT data FROM gateway_tasks WHERE id = $1", [q.taskId])).rows[0].data;
     expect(atSupplier.state).toBe("canceled");
     expect((await ui<{ id: number; status: string }[]>(b, "/ui/questions?status=all")).find((x) => x.id === q.id)?.status).toBe("expired");

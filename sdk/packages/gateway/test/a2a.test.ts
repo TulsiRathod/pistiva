@@ -212,6 +212,31 @@ describe("A2A gateway", () => {
     expect(answer.error?.code).toBe(RpcErrors.conflict);
   });
 
+  it("streams a round as one server-sent event and lets a waiting task be resubscribed, but not a finished one", async () => {
+    await start(multiTurn);
+    const grant = platform.issueGrant({ requester: buyer, provider: supplier, capability: "quote.request" });
+    const post = (method: string, params: unknown, token?: string) =>
+      fetch(endpoint + A2A_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 7, method, params }),
+      });
+    const res = await post("message/stream", { message: signedMessage(grant, { sku: "X", qty: 500 }) });
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const event = JSON.parse((await res.text()).replace(/^data: /, "").trim());
+    expect(event.id).toBe(7);
+    expect(event.result.status.state).toBe("input-required");
+
+    const again = await post("tasks/resubscribe", { id: grant.taskId }, bearer(buyer));
+    expect(JSON.parse((await again.text()).replace(/^data: /, "").trim()).result.id).toBe(grant.taskId);
+    await rpc("tasks/cancel", { id: grant.taskId }, bearer(buyer));
+    const done = await (await post("tasks/resubscribe", { id: grant.taskId }, bearer(buyer))).json();
+    expect(done.error.code).toBe(RpcErrors.unsupportedOperation);
+    // Errors are still plain JSON-RPC responses, not streams.
+    const denied = await post("message/stream", { message: { kind: "message", messageId: "m", role: "user", parts: [] } });
+    expect(denied.headers.get("content-type")).toContain("application/json");
+  });
+
   it("rejects a grant pinned to a contract version this agent does not implement", async () => {
     await start(singleShot);
     const grant = platform.issueGrant({ requester: buyer, provider: supplier, capability: "quote.request", taskTypeVersion: 2 });

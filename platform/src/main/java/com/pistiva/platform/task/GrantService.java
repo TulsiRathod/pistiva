@@ -178,6 +178,10 @@ public class GrantService {
             pending.attachApproval(approval.getId());
         }
         BillingService.Price price = BillingService.perTaskPrice(capability);
+        if (price != null && price.currency().equals(req.currency()) && price.amount().compareTo(req.budget()) > 0) {
+            // The budget is what the requester authorizes for this task; the provider's price is charged on completion.
+            throw decision.deny("Provider's price " + price.amount().toPlainString() + " " + price.currency() + " exceeds the budget");
+        }
         if (price != null) {
             pending.priceAt(price.amount(), price.currency());
         }

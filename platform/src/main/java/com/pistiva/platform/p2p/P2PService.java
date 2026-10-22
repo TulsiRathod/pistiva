@@ -23,6 +23,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.function.Supplier;
+import org.springframework.web.context.request.async.DeferredResult;
+import jakarta.annotation.PreDestroy;
 
 /**
  * Signaling and TURN credentials for direct agent-to-agent connections.
@@ -36,6 +41,16 @@ import java.util.UUID;
 public class P2PService {
 
     static final int MAX_SDP = 16 * 1024;
+    static final int MAX_WAIT_SECONDS = 25;
+    static final int MAX_WAITS_PER_AGENT = 3;
+    static final int MAX_WAITS_TOTAL = 2000;
+    private final java.util.concurrent.ConcurrentHashMap<UUID, Integer> waiting = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicInteger totalWaiting = new java.util.concurrent.atomic.AtomicInteger();
+    private final ScheduledExecutorService waiter = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "p2p-long-poll");
+        t.setDaemon(true);
+        return t;
+    });
     static final int MAX_OFFERS_PER_MINUTE = 60;
 
     private final JdbcTemplate jdbc;
@@ -129,6 +144,59 @@ public class P2PService {
                 FROM p2p_sessions WHERE provider_agent_id = ? AND answer IS NULL AND expires_at > now()
                 ORDER BY created_at LIMIT 20""",
                 (rs, i) -> row(rs), provider.agentId());
+    }
+
+    /**
+     * Long poll: completes as soon as {@code ready} yields a non-null value, or with {@code onTimeout}
+     * after the wait. Waiting parks no request thread; one scheduler re-checks every half second.
+     */
+    public <T> DeferredResult<T> waitFor(UUID agentId, int waitSeconds, Supplier<T> ready, Supplier<T> onTimeout) {
+        int seconds = Math.max(0, Math.min(waitSeconds, MAX_WAIT_SECONDS));
+        if (seconds > 0) {
+            // A held request is cheap but not free: each one is re-checked against the database twice a second.
+            int mine = waiting.merge(agentId, 1, Integer::sum);
+            if (mine > MAX_WAITS_PER_AGENT || totalWaiting.incrementAndGet() > MAX_WAITS_TOTAL) {
+                release(agentId);
+                throw new ApiException.TooManyRequests("Too many open long-poll requests for this agent");
+            }
+        }
+        DeferredResult<T> result = new DeferredResult<>((seconds + 5) * 1000L);
+        if (seconds > 0) {
+            Runnable done = () -> release(agentId);
+            result.onCompletion(done);
+            result.onTimeout(() -> result.setResult(onTimeout.get()));
+        }
+        long deadline = System.nanoTime() + seconds * 1_000_000_000L;
+        Runnable[] check = new Runnable[1];
+        check[0] = () -> {
+            if (result.isSetOrExpired()) {
+                return;
+            }
+            try {
+                T value = ready.get();
+                if (value != null) {
+                    result.setResult(value);
+                } else if (System.nanoTime() >= deadline) {
+                    result.setResult(onTimeout.get());
+                } else {
+                    waiter.schedule(check[0], 500, java.util.concurrent.TimeUnit.MILLISECONDS);
+                }
+            } catch (RuntimeException e) {
+                result.setErrorResult(e);
+            }
+        };
+        waiter.execute(check[0]);
+        return result;
+    }
+
+    private void release(UUID agentId) {
+        waiting.computeIfPresent(agentId, (k, v) -> v <= 1 ? null : v - 1);
+        totalWaiting.decrementAndGet();
+    }
+
+    @PreDestroy
+    void shutdown() {
+        waiter.shutdownNow();
     }
 
     public Session answer(AgentPrincipal provider, UUID sessionId, String answer, String signature) {

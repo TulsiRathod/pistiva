@@ -51,6 +51,12 @@ public class ApiException extends RuntimeException {
         }
     }
 
+    public static class TooManyRequests extends ApiException {
+        public TooManyRequests(String message) {
+            super(HttpStatus.TOO_MANY_REQUESTS, "too_many_requests", message);
+        }
+    }
+
     /** A policy decision denied the request. The reason is returned to the caller and audited. */
     public static class PolicyDenied extends ApiException {
         public PolicyDenied(String reason) {

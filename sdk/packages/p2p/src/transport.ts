@@ -1,6 +1,6 @@
 import type { AgentKeyPair, ConnectionKind, DiscoveredAgent, RpcTransport } from "@pistiva/agent-sdk";
 import { RTCPeerConnection, RTCSessionDescription, type RTCDataChannel } from "werift";
-import { CHANNEL, connectionKind, gathered, MAX_MESSAGE_BYTES, offerSignature, toIceServers, trustedKeys, verifiedBy, type Signaling } from "./signaling.ts";
+import { CHANNEL, connectionKind, FrameAssembler, gathered, offerSignature, toFrames, toIceServers, trustedKeys, verifiedBy, type Signaling } from "./signaling.ts";
 
 export interface PeerTransportOptions {
   platform: Signaling;
@@ -33,8 +33,12 @@ export class PeerTransport implements RpcTransport {
   constructor(private readonly opts: PeerTransportOptions) {}
 
   async send(provider: DiscoveredAgent, request: { body: string; authorization?: string }) {
-    const frame = JSON.stringify({ authorization: request.authorization, body: request.body });
-    if (Buffer.byteLength(frame) > MAX_MESSAGE_BYTES) return undefined;
+    let frames: string[];
+    try {
+      frames = toFrames(JSON.stringify({ authorization: request.authorization, body: request.body }));
+    } catch {
+      return undefined;
+    }
     let peer: Peer;
     try {
       peer = await this.peerFor(provider);
@@ -59,7 +63,7 @@ export class PeerTransport implements RpcTransport {
         },
       });
       try {
-        peer.channel.send(frame);
+        for (const frame of frames) peer.channel.send(frame);
       } catch (e) {
         clearTimeout(timer);
         peer.pending.delete(id);
@@ -117,7 +121,7 @@ export class PeerTransport implements RpcTransport {
       let answer = session;
       while (!answer.answer && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 150));
-        answer = await platform.p2pSession(session.id);
+        answer = await platform.p2pSession(session.id, 5);
       }
       if (!answer.answer || !answer.answerSignature) throw new Error("Provider did not answer");
       const payload = { t: "pistiva-p2p-answer", sessionId: session.id, from: provider.agentId, to: platform.agentId, offer, sdp: answer.answer };
@@ -141,8 +145,10 @@ export class PeerTransport implements RpcTransport {
         });
       });
       const peer: Peer = { pc, channel, connection: await connectionKind(pc), pending: new Map() };
+      const assembler = new FrameAssembler();
       channel.onMessage.subscribe((data) => {
-        const text = data.toString();
+        const text = assembler.push(data.toString());
+        if (text === undefined) return;
         let id: unknown;
         try {
           id = (JSON.parse(text) as { id?: unknown }).id;

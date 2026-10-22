@@ -18,7 +18,7 @@ import { buildCapabilities, disclosureKey } from "./modules.ts";
 import { OutboundService, summarize, type OutboundRequest } from "./outbound.ts";
 import { PeerListener, PeerTransport } from "@pistiva/p2p";
 import { KitMetrics } from "./metrics.ts";
-import { KitRepo, PgAuditSink, PgDraftStore, PgNonceStore, PgTaskStore, type Direction } from "./repo.ts";
+import { KitRepo, PgAuditSink, PgDraftStore, PgNonceStore, PgRoundStore, PgTaskStore, type Direction } from "./repo.ts";
 
 export interface KitDeps {
   cfg: KitConfig;
@@ -101,8 +101,10 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
   jobs.register("approvals.poll", () => commitments.poll());
   jobs.every("approvals.poll", deps.approvalPollMs ?? 5000);
   const nonces = new PgNonceStore(db);
+  const roundStore = new PgRoundStore(db);
   jobs.register("nonces.prune", () => nonces.prune().then(() => undefined));
-  for (const kind of ["questions.expire", "outbound.recover", "receipts.resubmit", "nonces.prune"]) jobs.every(kind, deps.maintenanceMs ?? 60_000);
+  jobs.register("rounds.prune", () => roundStore.prune().then(() => undefined));
+  for (const kind of ["questions.expire", "outbound.recover", "receipts.resubmit", "nonces.prune", "rounds.prune"]) jobs.every(kind, deps.maintenanceMs ?? 60_000);
   jobs.start();
   const app = createProviderGateway({
     agentId: deps.agentId,
@@ -115,6 +117,7 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
     capabilities: handlers,
     taskStore: new PgTaskStore(db),
     nonceStore: nonces,
+    roundStore,
     audit: metrics.auditSink(new PgAuditSink(db)),
     logger: deps.logger,
     onRound: (r) => recordInbound(repo, metrics, r),
@@ -213,8 +216,9 @@ function registerOperatorApi(
   const bearer = (req: FastifyRequest) => req.headers.authorization?.replace(/^Bearer\s+/i, "");
 
   app.post("/ui/login", async (req, reply) => {
-    const token = auth.login((req.body as { password?: string })?.password ?? "");
-    return token ? { token } : reply.code(401).send({ error: "unauthorized", message: "Wrong password" });
+    const result = auth.attempt(req.ip, (req.body as { password?: string })?.password ?? "");
+    if (result.throttled) return reply.code(429).send({ error: "too_many_requests", message: "Too many failed sign-ins; try again in a few minutes" });
+    return result.token ? { token: result.token } : reply.code(401).send({ error: "unauthorized", message: "Wrong password" });
   });
 
   app.addHook("onRequest", async (req, reply) => {

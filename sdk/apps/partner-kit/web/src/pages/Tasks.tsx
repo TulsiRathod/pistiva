@@ -111,6 +111,7 @@ function TaskDetail({ api, id }: { api: NodeApi; id: string }) {
             <tr>
               <th>Round</th>
               <th>State</th>
+              <th>Connection</th>
               <th>Request hash</th>
               <th>Response hash</th>
               <th>Signatures</th>
@@ -121,6 +122,9 @@ function TaskDetail({ api, id }: { api: NodeApi; id: string }) {
               <tr key={r.round}>
                 <td>{r.round}</td>
                 <td>{r.state}</td>
+                <td title="Peer-to-peer is direct; through a TURN relay it is relayed. HTTPS counts as direct.">
+                  {r.signed.receipt.connection === "relayed" ? <span className="badge warn">relayed</span> : <span className="badge ok">{r.signed.receipt.connection === "direct" ? "direct · p2p" : "direct · https"}</span>}
+                </td>
                 <td><code title={String(r.signed.receipt.requestHash)}>{String(r.signed.receipt.requestHash).slice(0, 18)}…</code></td>
                 <td><code title={String(r.signed.receipt.responseHash)}>{String(r.signed.receipt.responseHash).slice(0, 18)}…</code></td>
                 <td>

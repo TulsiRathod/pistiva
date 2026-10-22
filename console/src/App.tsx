@@ -8,10 +8,11 @@ import { Landing, LogoMark } from "./pages/Landing.tsx";
 import { Login, type AuthMode } from "./pages/Login.tsx";
 import { Overview } from "./pages/Overview.tsx";
 import { PolicyPage } from "./pages/PolicyPage.tsx";
+import { Webhooks } from "./pages/Webhooks.tsx";
 import { Usage } from "./pages/Usage.tsx";
 
 const TOKEN_KEY = "pistiva.token";
-type Tab = "overview" | "agents" | "approvals" | "policy" | "usage" | "audit" | "admin";
+type Tab = "overview" | "agents" | "approvals" | "policy" | "usage" | "webhooks" | "audit" | "admin";
 
 function readToken(): string | null {
   try {
@@ -51,6 +52,11 @@ const ICONS: Record<Tab, ReactNode> = {
       <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
     </svg>
   ),
+  webhooks: (
+    <svg {...ic}>
+      <path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1" />
+    </svg>
+  ),
   audit: (
     <svg {...ic}>
       <path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" />
@@ -71,6 +77,7 @@ const TITLES: Record<Tab, [string, string]> = {
   approvals: ["Approvals", "Commitments your agents can only make after a person approves them"],
   policy: ["Policy", "Rules the platform checks before every task grant"],
   usage: ["Usage", "Priced tasks your organization completed as a provider or a requester"],
+  webhooks: ["Webhooks", "Signed callbacks when grants, receipts, approvals and certifications change"],
   audit: ["Audit log", "Grants, denials and signed receipts — metadata only"],
   admin: ["Admin dashboard", "Network health, verification queue and organization management"],
 };
@@ -128,7 +135,7 @@ export function App() {
   if (!me) return <main className="center muted">Loading…</main>;
 
   const membership = me.organizations.find((o) => o.orgId === orgId);
-  const tabs: Tab[] = ["overview", "agents", "approvals", "policy", "usage", "audit", ...(me.platformAdmin ? (["admin"] as Tab[]) : [])];
+  const tabs: Tab[] = ["overview", "agents", "approvals", "policy", "usage", "webhooks", "audit", ...(me.platformAdmin ? (["admin"] as Tab[]) : [])];
   const [title, subtitle] = TITLES[tab];
 
   return (
@@ -193,6 +200,7 @@ export function App() {
         {tab === "approvals" && membership && <Approvals api={api} orgId={membership.orgId} role={membership.role} />}
         {tab === "policy" && membership && <PolicyPage api={api} orgId={membership.orgId} role={membership.role} />}
         {tab === "usage" && membership && <Usage api={api} orgId={membership.orgId} />}
+        {tab === "webhooks" && membership && <Webhooks api={api} orgId={membership.orgId} role={membership.role} />}
         {tab === "audit" && membership && <Audit api={api} orgId={membership.orgId} />}
       </main>
     </div>

@@ -81,8 +81,8 @@ function toRpcError(e: unknown): JsonRpcError {
 export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void {
   const { opts } = core;
   const tasks = core.tasks;
-  // Per round: (requester, task, idempotency key) -> the signed reply, so a retried round is answered once.
-  const rounds = new Map<string, { bodyHash: string; reply: Promise<A2ATask> }>();
+  // Rounds running in this process, so concurrent retries wait on the same reply. Finished rounds live in core.rounds.
+  const inFlight = new Map<string, { bodyHash: string; reply: Promise<A2ATask> }>();
 
   app.get(AGENT_CARD_PATH, async (_req, reply) => {
     if (!opts.card) return reply.code(404).send({ error: "not_found", message: "No agent card configured" });
@@ -103,7 +103,24 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
     return connection ? withConnection(connection, run) : run();
   }
   app.decorate("handleRpc", handleRpc);
-  app.post(A2A_PATH, async (req) => handleRpc(req.body, req.headers.authorization));
+  app.post(A2A_PATH, async (req, reply) => {
+    const rpc = req.body as JsonRpcRequest<Record<string, unknown>> | undefined;
+    // Streaming. A round is atomic here (the provider replies once per round), so a stream carries one
+    // event: the task as of that round, then closes. A task waiting for an answer can be re-read the same way.
+    const streamed = rpc?.method === "message/stream" ? "message/send" : rpc?.method === "tasks/resubscribe" ? "tasks/get" : undefined;
+    if (!rpc || !streamed) return handleRpc(req.body, req.headers.authorization);
+    const res = (await handleRpc({ ...rpc, method: streamed }, req.headers.authorization)) as { error?: unknown; result?: A2ATask };
+    if (res.error) return res;
+    if (rpc.method === "tasks/resubscribe" && TERMINAL_STATES.includes(res.result!.status.state)) {
+      return { jsonrpc: "2.0", id: rpc.id, error: { code: RpcErrors.unsupportedOperation, message: `Task is ${res.result!.status.state}; there is nothing to resubscribe to` } };
+    }
+    return reply
+      .header("Content-Type", "text/event-stream")
+      .header("Cache-Control", "no-cache")
+      .send(`data: ${JSON.stringify(res)}
+
+`);
+  });
 
   async function dispatch(
     rpc: JsonRpcRequest<Record<string, unknown>>,
@@ -122,7 +139,7 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
           return { jsonrpc: "2.0", id, result: await cancel(auth, rpc.params?.id) };
         case "message/stream":
         case "tasks/resubscribe":
-          throw new RpcFailure(RpcErrors.unsupportedOperation, `${rpc.method} is not supported yet`);
+          throw new RpcFailure(RpcErrors.unsupportedOperation, `${rpc.method} is only available over HTTP`);
         default:
           throw new RpcFailure(RpcErrors.methodNotFound, `Unknown method ${rpc.method}`);
       }
@@ -150,15 +167,22 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
 
     const key = `${h.from}:${h.taskId}:${h.idempotencyKey}`;
     const bodyHash = responseHash(envelope.body);
-    const cached = rounds.get(key);
+    const cached = inFlight.get(key) ?? (await core.rounds.get(key).then((s) => s && { bodyHash: s.bodyHash, reply: Promise.resolve(s.task) }));
     if (cached) {
       if (cached.bodyHash !== bodyHash) throw new TaskRejection(409, "idempotency_conflict", "Idempotency key reused with a different message");
       await core.audit.write("a2a.retry_served_from_cache", { taskId: h.taskId, round: h.round });
       return cached.reply;
     }
-    const reply = runRound(message, envelope, grant, requesterOrgId);
-    rounds.set(key, { bodyHash, reply });
-    reply.catch(() => rounds.delete(key));
+    const reply = runRound(message, envelope, grant, requesterOrgId).then(async (task) => {
+      // A store failure must not fail a round that already happened; the retry then runs the round's checks again.
+      await core.rounds.put(key, bodyHash, task).catch(() => undefined);
+      return task;
+    });
+    inFlight.set(key, { bodyHash, reply });
+    reply.then(
+      () => inFlight.delete(key),
+      () => inFlight.delete(key),
+    );
     return reply;
   }
 
@@ -362,7 +386,7 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
       preferredTransport: "JSONRPC",
       version: card.version,
       capabilities: {
-        streaming: false,
+        streaming: true,
         pushNotifications: false,
         extensions: [
           {

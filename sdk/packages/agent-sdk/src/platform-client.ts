@@ -88,12 +88,14 @@ export class PlatformClient implements PlatformLookup {
     return this.call<P2PSession>("POST", "/p2p/sessions", { providerAgentId, offer, signature });
   }
 
-  async pendingP2PSessions(): Promise<P2PSession[]> {
-    return this.call<P2PSession[]>("GET", "/p2p/sessions/pending");
+  /** With `waitSeconds` the platform holds the request until an offer arrives, so polling costs one request per wait. */
+  async pendingP2PSessions(waitSeconds = 0): Promise<P2PSession[]> {
+    return this.call<P2PSession[]>("GET", `/p2p/sessions/pending?waitSeconds=${waitSeconds}`);
   }
 
-  async p2pSession(id: string): Promise<P2PSession> {
-    return this.call<P2PSession>("GET", `/p2p/sessions/${id}`);
+  /** With `waitSeconds` the platform holds the request until the provider has answered. */
+  async p2pSession(id: string, waitSeconds = 0): Promise<P2PSession> {
+    return this.call<P2PSession>("GET", `/p2p/sessions/${id}?waitSeconds=${waitSeconds}`);
   }
 
   async answerP2PSession(id: string, answer: string, signature: string): Promise<P2PSession> {

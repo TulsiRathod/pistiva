@@ -33,5 +33,5 @@ Before this change everything ran inside a request. A Partner Kit restart lost e
 
 - Webhook delivery is at least once. Receivers de-duplicate on `X-Pistiva-Delivery` and reject old timestamps.
 - The kit's queue is good for a node's volume (tens of jobs a minute). It is not a general-purpose broker.
-- The answer to a retried round (same idempotency key) is still cached in process memory, on both the A2A and the legacy route. A retry that reaches a different replica runs the round again. Handlers must therefore stay safe to repeat: `order.confirm` refuses a draft that is already confirmed. A shared reply cache can come later.
+- The reply to each A2A round is kept in a `RoundStore` (the Partner Kit uses its database, `gateway_rounds`, pruned after two days), so a retry that reaches any replica, or arrives after a restart, gets the original reply and the handler runs once. Concurrent retries within one process wait on the same in-flight round. Two replicas receiving the same retry at the same instant can still both run it; handlers stay safe to repeat (`order.confirm` refuses a draft that is already confirmed). The legacy single-round route keeps its in-memory cache.
 - Redis is optional everywhere. Without it, a platform running several replicas can accept a replayed agent assertion once per replica within its short TTL (2 minutes).

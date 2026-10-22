@@ -6,7 +6,8 @@ function summarize(details: string | null): string {
   if (!details) return "";
   try {
     const d = JSON.parse(details) as Record<string, unknown>;
-    return String(d.reason ?? d.status ?? d.capability ?? d.method ?? "");
+    const base = String(d.reason ?? d.status ?? d.capability ?? d.method ?? "");
+    return d.connection && d.connection !== "direct" ? `${base} · ${d.connection}` : d.connection === "direct" ? `${base} · direct` : base;
   } catch {
     return "";
   }

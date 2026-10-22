@@ -54,6 +54,14 @@ export function PolicyPage({ api, orgId, role }: { api: Api; orgId: string; role
         <input disabled={!canEdit} type="number" min={1} max={10000} value={draft.rateLimitPerMinute}
           onChange={(e) => setDraft({ ...draft, rateLimitPerMinute: Number(e.target.value) })} />
       </label>
+      <label className="row">
+        <input disabled={!canEdit} type="checkbox" checked={draft.requireSeparateApprover === true}
+          onChange={(e) => setDraft({ ...draft, requireSeparateApprover: e.target.checked })} />
+        <span>
+          Require a different person to approve commitments
+          <span className="muted"> — whoever registered an agent cannot approve that agent's purchases</span>
+        </span>
+      </label>
       {save.error && <p className="error">{save.error}</p>}
       {canEdit ? <button disabled={save.busy}>Save policy</button> : <p className="muted">Only owners and admins can change the policy.</p>}
     </form>

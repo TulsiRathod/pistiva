@@ -126,6 +126,7 @@ public class ReceiptService {
         audit.record(taskId, "RECEIPT_RECORDED", "agent:" + caller.agentId(), requester.getOrgId(), provider.getOrgId(),
                 requestHash, responseHash, Map.of(
                         "round", round, "status", state,
+                        "connection", r.path("connection").asText("direct"),
                         "providerKid", signed.providerKid(), "providerSignature", signed.providerSignature(),
                         "requesterKid", signed.requesterKid(), "requesterSignature", signed.requesterSignature()));
         return new RecordedReceipt(taskId, round, state, false);

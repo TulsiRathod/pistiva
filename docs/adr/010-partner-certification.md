@@ -46,6 +46,7 @@ Any verified organization can publish an agent. Verification proves who runs it,
 ## Consequences
 
 - The suite proves behavior at one moment, not forever. Expiry forces periodic re-runs, and revocation covers incidents in between.
-- The platform trusts the certifier's report. It does not re-run the probes, because doing so would put real task data through the control plane. Choosing certifiers is therefore an admin decision, and every result is audited with its hash.
+- The platform trusts the certifier's report, but not blindly. It does not re-run the probes, because doing so would put real task data through the control plane. It does require evidence the probes happened: the report must carry the time the suite started (within the last hour), and the platform must have issued at least `pistiva.certification.min-probe-grants` (default 5) grants from the certifier's agent to the tested agent since then. A report fabricated without running the suite has no such grants behind it. Choosing certifiers is still an admin decision, and every result is audited with its hash.
+- Tasks requested by a certifier organization are not billed, so probing a priced provider costs the certifier nothing. The suite's default budget is the provider's advertised price, since the platform refuses a grant whose budget is below it.
 - The probes are real tasks: they consume grants and count against the certifier's rate limit and the partner's audit log. With the default `1.00 INR` budget they never cross an approval threshold.
 - A gateway built on `@pistiva/gateway` passes out of the box. The suite matters most for partners that implement the protocol themselves.

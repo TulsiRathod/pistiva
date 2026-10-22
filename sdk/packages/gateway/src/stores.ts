@@ -59,6 +59,36 @@ export class IdempotencyStore {
   }
 }
 
+/**
+ * The signed reply to a round, kept under (requester, task, idempotency key) so a retried round is
+ * answered with the original reply instead of running again. With several replicas of a node, share
+ * this store (the Partner Kit uses its database); the in-memory default suits a single process.
+ */
+export interface RoundStore {
+  get(key: string): Promise<{ bodyHash: string; task: A2ATask } | undefined>;
+  put(key: string, bodyHash: string, task: A2ATask): Promise<void>;
+}
+
+export class MemoryRoundStore implements RoundStore {
+  private readonly entries = new Map<string, { bodyHash: string; task: A2ATask; until: number }>();
+
+  constructor(private readonly ttlMs = 24 * 60 * 60 * 1000) {}
+
+  async get(key: string) {
+    const e = this.entries.get(key);
+    if (e && e.until < Date.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return e && { bodyHash: e.bodyHash, task: structuredClone(e.task) };
+  }
+
+  async put(key: string, bodyHash: string, task: A2ATask) {
+    if (this.entries.size > 10_000) for (const [k, e] of this.entries) if (e.until < Date.now()) this.entries.delete(k);
+    this.entries.set(key, { bodyHash, task: structuredClone(task), until: Date.now() + this.ttlMs });
+  }
+}
+
 /** Provider-side state of one A2A task. Persisted so a task survives a gateway restart. */
 export interface StoredTask {
   id: string;

@@ -6,7 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FakePlatform, type FakeAgent } from "../../gateway/test/fake-platform.ts";
-import { PeerListener, PeerTransport, type Signaling } from "../src/index.ts";
+import { FrameAssembler, PeerListener, PeerTransport, toFrames, type Signaling } from "../src/index.ts";
 
 const SECRET = "test-turn-secret";
 const RELAY_PORTS = Array.from({ length: 11 }, (_, i) => 49160 + i);
@@ -128,6 +128,36 @@ describe("peer-to-peer A2A", { timeout: 120_000 }, () => {
     expect(out.state).toBe("completed");
     expect(out.connection).toBe("relayed");
     expect(out.rounds[0]!.receipt.receipt.connection).toBe("relayed");
+  });
+
+  it("carries messages far larger than one data channel message, in both directions", async () => {
+    useTurn = false;
+    signaling = new InMemorySignaling(() => []);
+    const listener = new PeerListener({ platform: signaling.as(platform, supplier), keys: supplier.keys, app, pollMs: 100 });
+    listener.start();
+    const transport = new PeerTransport({ platform: signaling.as(platform, buyer), keys: buyer.keys });
+    closers.push(() => listener.stop(), () => transport.close());
+    // The gateway echoes an unknown method name in its error, so a 100 KB name makes a 100 KB reply too.
+    const method = "m".repeat(100_000);
+    const sent = await transport.send(provider, { body: JSON.stringify({ jsonrpc: "2.0", id: "big-1", method, params: {} }) });
+    expect(sent?.connection).toBe("direct");
+    const reply = JSON.parse(sent!.text);
+    expect(reply.id).toBe("big-1");
+    expect(reply.error.message).toContain(method);
+  });
+
+  it("reassembles frames in any order, ignores duplicates and malformed input", () => {
+    const text = "héllo ✓ ".repeat(8000);
+    const frames = toFrames(text);
+    expect(frames.length).toBeGreaterThan(1);
+    const assembler = new FrameAssembler();
+    expect(assembler.push("not json")).toBeUndefined();
+    expect(assembler.push(JSON.stringify({ m: "x", i: 5, n: 2, d: "" }))).toBeUndefined();
+    const shuffled = [...frames].reverse();
+    let out: string | undefined;
+    for (const f of [shuffled[0]!, shuffled[0]!, ...shuffled.slice(1)]) out = assembler.push(f) ?? out;
+    expect(out).toBe(text);
+    expect(() => toFrames("x".repeat(5 * 1024 * 1024))).toThrow(/too large/);
   });
 
   it("does not answer an offer that its claimed requester did not sign", async () => {

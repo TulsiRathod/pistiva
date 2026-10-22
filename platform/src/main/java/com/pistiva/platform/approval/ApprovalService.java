@@ -11,6 +11,7 @@ import com.pistiva.platform.org.OrgMember.Role;
 import com.pistiva.platform.org.OrgService;
 import com.pistiva.platform.org.Organization;
 import com.pistiva.platform.org.OrganizationRepository;
+import com.pistiva.platform.policy.PolicyService;
 import com.pistiva.platform.security.Principals.AgentPrincipal;
 import com.pistiva.platform.security.Principals.UserPrincipal;
 import org.springframework.stereotype.Service;
@@ -39,15 +40,17 @@ public class ApprovalService {
     private final OrgService orgService;
     private final AuditService audit;
     private final ObjectMapper mapper;
+    private final PolicyService policies;
 
     public ApprovalService(ApprovalRepository approvals, AgentRepository agents, OrganizationRepository orgs,
-                           OrgService orgService, AuditService audit, ObjectMapper mapper) {
+                           OrgService orgService, AuditService audit, ObjectMapper mapper, PolicyService policies) {
         this.approvals = approvals;
         this.agents = agents;
         this.orgs = orgs;
         this.orgService = orgService;
         this.audit = audit;
         this.mapper = mapper;
+        this.policies = policies;
     }
 
     public record ApprovalRequest(UUID providerAgentId, String capability, String reference, BigDecimal amount,
@@ -99,6 +102,11 @@ public class ApprovalService {
         }
         if (a.getStatus() != Approval.Status.PENDING) {
             throw new ApiException.Conflict("Approval was already decided: " + a.getStatus());
+        }
+        // Separation of duties: whoever registered the requesting agent may not approve its commitments.
+        if (policies.get(a.getOrgId()).separateApproverRequired()
+                && agents.findById(a.getRequesterAgentId()).map(Agent::getCreatedBy).filter(user.userId()::equals).isPresent()) {
+            throw new ApiException.Forbidden("Your organization's policy requires a different person than the one who registered this agent to decide");
         }
         if (decision != Approval.Status.APPROVED && (comment == null || comment.isBlank())) {
             throw new ApiException.BadRequest("A comment is required when rejecting or requesting changes");

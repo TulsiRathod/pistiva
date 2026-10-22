@@ -89,6 +89,7 @@ public class BillingService {
                 JOIN agents ra ON ra.id = g.requester_agent_id
                 JOIN agents pa ON pa.id = g.provider_agent_id
                 WHERE g.task_id = ? AND g.price_amount IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM organizations ro WHERE ro.id = ra.org_id AND ro.certifier)
                 ORDER BY g.created_at
                 LIMIT 1
                 ON CONFLICT (task_id) DO NOTHING""",
@@ -106,18 +107,32 @@ public class BillingService {
                 GROUP BY 1, 2 ORDER BY 1, 2""",
                 (rs, i) -> new Total(rs.getString(1), rs.getString(2), rs.getLong(3), rs.getBigDecimal(4)),
                 orgId, orgId, orgId, Timestamp.from(range[0]), Timestamp.from(range[1]));
-        List<UsageRecord> records = jdbc.query("""
+        return new OrgUsage(period, totals, records(orgId, range, 500));
+    }
+
+    private List<UsageRecord> records(UUID orgId, Instant[] range, int limit) {
+        return jdbc.query("""
                 SELECT u.task_id, CASE WHEN u.provider_org_id = ? THEN 'provider' ELSE 'requester' END,
                        CASE WHEN u.provider_org_id = ? THEN u.requester_org_id ELSE u.provider_org_id END, o.name,
                        u.capability, u.amount, u.currency, u.connection, u.completed_at
                 FROM usage_records u
                 JOIN organizations o ON o.id = CASE WHEN u.provider_org_id = ? THEN u.requester_org_id ELSE u.provider_org_id END
                 WHERE (u.provider_org_id = ? OR u.requester_org_id = ?) AND u.completed_at >= ? AND u.completed_at < ?
-                ORDER BY u.completed_at DESC LIMIT 500""",
+                ORDER BY u.completed_at DESC LIMIT ?""",
                 (rs, i) -> new UsageRecord(rs.getObject(1, UUID.class), rs.getString(2), rs.getObject(3, UUID.class), rs.getString(4),
                         rs.getString(5), rs.getBigDecimal(6), rs.getString(7), rs.getString(8), rs.getTimestamp(9).toInstant()),
-                orgId, orgId, orgId, orgId, orgId, Timestamp.from(range[0]), Timestamp.from(range[1]));
-        return new OrgUsage(period, totals, records);
+                orgId, orgId, orgId, orgId, orgId, Timestamp.from(range[0]), Timestamp.from(range[1]), limit);
+    }
+
+    /** Every priced task of the month for one organization, to reconcile against its own books. */
+    public String usageCsv(UserPrincipal user, UUID orgId, String period) {
+        orgService.requireMember(user, orgId);
+        StringBuilder csv = new StringBuilder("task_id,completed_at,role,counterparty,task_type,connection,amount,currency\n");
+        for (UsageRecord r : records(orgId, range(period), 100_000)) {
+            csv.append(String.join(",", r.taskId().toString(), r.completedAt().toString(), r.role(), csvField(r.counterpartyName()),
+                    r.capability(), r.connection(), r.amount().toPlainString(), r.currency())).append('\n');
+        }
+        return csv.toString();
     }
 
     /** What each provider is owed for a month, net of the platform fee, and whether it has been paid. */

@@ -37,6 +37,9 @@ public class SecurityConfig {
                 .formLogin(f -> f.disable())
                 .exceptionHandling(e -> e.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
                 .authorizeHttpRequests(auth -> auth
+                        // A long-polled request is re-dispatched to write its result. That can only follow an
+                        // initial request that already passed authentication and authorization.
+                        .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ASYNC).permitAll()
                         .requestMatchers("/auth/register", "/auth/login", "/.well-known/**",
                                 "/actuator/health", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/error")
                         .permitAll()

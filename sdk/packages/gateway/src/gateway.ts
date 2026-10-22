@@ -22,7 +22,7 @@ import {
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerA2ARoutes } from "./a2a-server.ts";
 import { LocalAuditLog, type AuditSink } from "./audit-log.ts";
-import { IdempotencyStore, MemoryTaskStore, NonceCache, type NonceStore, type TaskStore } from "./stores.ts";
+import { IdempotencyStore, MemoryRoundStore, MemoryTaskStore, NonceCache, type NonceStore, type RoundStore, type TaskStore } from "./stores.ts";
 
 export interface TaskContext {
   taskId: string;
@@ -69,6 +69,8 @@ export interface ProviderGatewayOptions {
   contracts?: ContractRegistry;
   /** Where A2A task state lives; in memory unless the host app provides a database-backed store. */
   taskStore?: TaskStore;
+  /** Where replies to retried rounds live; in memory unless the host app shares one across replicas. */
+  roundStore?: RoundStore;
   /** Where seen nonces live; in memory unless the host app shares one across replicas. */
   nonceStore?: NonceStore;
   /** Custom sink for the gateway's own log; defaults to a JSONL file at auditLogPath. */
@@ -112,6 +114,7 @@ export interface GatewayCore {
   opts: ProviderGatewayOptions;
   contracts: ContractRegistry;
   nonces: NonceStore;
+  rounds: RoundStore;
   tasks: TaskStore;
   audit: AuditSink;
   authorize(envelope: Envelope): Promise<{ grant: GrantClaims; requesterOrgId: string }>;
@@ -141,6 +144,7 @@ export function createProviderGateway(opts: ProviderGatewayOptions): FastifyInst
     opts,
     contracts: opts.contracts ?? new ContractRegistry(opts.platform),
     nonces: opts.nonceStore ?? new NonceCache(),
+    rounds: opts.roundStore ?? new MemoryRoundStore(),
     tasks: opts.taskStore ?? new MemoryTaskStore(),
     audit: opts.audit ?? new LocalAuditLog(opts.auditLogPath),
     authorize,

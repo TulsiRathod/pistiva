@@ -37,6 +37,15 @@ public class BillingController {
         return billing.usage(Principals.user(), orgId, periodOrCurrent(period));
     }
 
+    @GetMapping("/orgs/{orgId}/usage.csv")
+    public ResponseEntity<String> usageCsv(@PathVariable UUID orgId, @RequestParam(required = false) String period) {
+        String p = periodOrCurrent(period);
+        return ResponseEntity.ok()
+                .contentType(new MediaType("text", "csv"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"pistiva-usage-" + p + ".csv\"")
+                .body(billing.usageCsv(Principals.user(), orgId, p));
+    }
+
     @GetMapping("/admin/payouts")
     public List<BillingService.PayoutLine> payouts(@RequestParam(required = false) String period) {
         return billing.payouts(Principals.user(), periodOrCurrent(period));

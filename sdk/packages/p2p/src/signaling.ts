@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { canonicalBytes, signBytes, verifyBytes, type AgentKeyPair, type IceServerConfig, type P2PSession, type PlatformLookup } from "@pistiva/agent-sdk";
 import { RTCPeerConnection, type RTCIceServer } from "werift";
 
@@ -7,14 +8,56 @@ export interface Signaling extends Pick<PlatformLookup, "agentStatus"> {
   readonly kid: string;
   iceServers(): Promise<IceServerConfig[]>;
   createP2PSession(providerAgentId: string, offer: string, signature: string): Promise<P2PSession>;
-  pendingP2PSessions(): Promise<P2PSession[]>;
-  p2pSession(id: string): Promise<P2PSession>;
+  pendingP2PSessions(waitSeconds?: number): Promise<P2PSession[]>;
+  p2pSession(id: string, waitSeconds?: number): Promise<P2PSession>;
   answerP2PSession(id: string, answer: string, signature: string): Promise<P2PSession>;
 }
 
 /** The channel label and the message limit both ends agree on. */
 export const CHANNEL = "a2a";
-export const MAX_MESSAGE_BYTES = 60 * 1024;
+/** Largest logical message (a JSON-RPC request or reply); bigger ones are refused, not truncated. */
+export const MAX_MESSAGE_CHARS = 4 * 1024 * 1024;
+/** A data channel message stays well under the ~64 KB SCTP limit even for multi-byte text. */
+const CHUNK_CHARS = 16 * 1024;
+const MAX_PARTIAL_MESSAGES = 16;
+
+/** Splits a logical message into frames small enough for one data channel message each. */
+export function toFrames(text: string): string[] {
+  if (text.length > MAX_MESSAGE_CHARS) throw new Error("Message too large for a peer connection");
+  const id = randomUUID();
+  const n = Math.max(1, Math.ceil(text.length / CHUNK_CHARS));
+  return Array.from({ length: n }, (_, i) => JSON.stringify({ m: id, i, n, d: text.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS) }));
+}
+
+/** Puts frames back together; returns the message when its last frame arrives. Malformed or excess input is dropped. */
+export class FrameAssembler {
+  private readonly partial = new Map<string, { n: number; parts: Map<number, string> }>();
+
+  push(raw: string): string | undefined {
+    let frame: { m?: unknown; i?: unknown; n?: unknown; d?: unknown };
+    try {
+      frame = JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+    const { m, d } = frame;
+    const i = frame.i as number;
+    const n = frame.n as number;
+    if (typeof m !== "string" || typeof d !== "string" || !Number.isInteger(i) || !Number.isInteger(n) || n < 1 || i < 0 || i >= n) return undefined;
+    if (n * CHUNK_CHARS > MAX_MESSAGE_CHARS + CHUNK_CHARS || d.length > CHUNK_CHARS) return undefined;
+    let entry = this.partial.get(m);
+    if (!entry) {
+      if (this.partial.size >= MAX_PARTIAL_MESSAGES) this.partial.delete(this.partial.keys().next().value as string);
+      entry = { n, parts: new Map() };
+      this.partial.set(m, entry);
+    }
+    if (entry.n !== n || entry.parts.has(i)) return undefined;
+    entry.parts.set(i, d);
+    if (entry.parts.size < entry.n) return undefined;
+    this.partial.delete(m);
+    return Array.from({ length: entry.n }, (_, k) => entry!.parts.get(k)).join("");
+  }
+}
 
 /**
  * Agents sign what they send through the platform, so it cannot swap in its own DTLS fingerprint:

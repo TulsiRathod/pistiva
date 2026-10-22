@@ -100,11 +100,14 @@ A purchase above your organization's approval threshold can't be committed until
 3. An owner, admin or approver decides it under **Approvals** in the console.
 4. The node confirms with the supplier automatically. Each approval backs exactly one commitment.
 
+To keep anyone from approving their own agent's purchases, turn on **Require a different person to approve commitments** under Policy: the user who registered an agent can then no longer decide that agent's approvals.
+
 ## Reliability and webhooks
 
 See [ADR 009](docs/adr/009-background-work-and-reliability.md).
 - **Partner Kit:** a Postgres-backed job queue resumes tasks after restarts and retries with backoff. It cancels tasks whose questions go unanswered for 24 hours, recovers tasks from suppliers that went silent, and re-sends receipts the platform refused. `GET /ui/jobs` shows the queue. Replicas of one node share replay protection through its database.
 - **Platform:** `POST /orgs/{orgId}/webhooks` with `{ "url": "https://â€¦", "events": ["GRANT_ISSUED", "TASK_EXPIRED"] }` subscribes to events. `GET /webhooks/event-types` lists them, and `*` subscribes to all. Each delivery is signed with `X-Pistiva-Signature: sha256=HMAC(secret, timestamp + "." + body)`. The secret is returned only when the webhook is created, and deliveries are retried for up to 10 attempts. Abandoned tasks are expired after 25 hours.
+- **Retries:** the reply to each A2A round is stored in the node's database, so a retry that reaches another replica, or arrives after a restart, gets the original reply.
 - **Multiple platform replicas:** set `PISTIVA_REDIS_URL` (for example `redis://redis:6379`) to share replay protection between them.
 
 ## Partner certification
@@ -176,8 +179,14 @@ p2p: { enabled: true }          # forceRelay: true sends everything through TURN
 docker compose -f infra/docker-compose.yml -f infra/turn.yml up --build   # adds coturn and points the platform at it
 ```
 
-Each task reports whether it ran `direct` or `relayed`. The provider signs this into its receipts, and it appears in node metrics and usage records. Platform settings: `PISTIVA_STUN_URLS`, `PISTIVA_TURN_URLS`, `PISTIVA_TURN_SECRET`.
+Messages of any size up to 4 MB are chunked over the channel, and providers learn about offers through long polling, so an idle node costs a few requests a minute. Each task reports whether it ran `direct` or `relayed`. The provider signs this into its receipts, and it appears in node metrics and usage records. Platform settings: `PISTIVA_STUN_URLS`, `PISTIVA_TURN_URLS`, `PISTIVA_TURN_SECRET`.
+
+## Operations and security
+
+- [Runbook](docs/runbook.md): what to back up, restore, key rotation, incident actions, alerts, upgrades, and a checklist for going to production.
+- [ADR 013](docs/adr/013-security-hardening.md): webhook URL guard against reaching internal networks, sign-in throttling, long-poll limits, price-versus-budget check, and what is not covered.
+- A2A streaming: `message/stream` returns the round as one server-sent event, and `tasks/resubscribe` re-reads a task that is waiting for an answer.
 
 ## Task-type contracts
 
-`GET /task-types` lists the contracts. `GET /task-types/{name}/versions/{v}` returns one, with self-contained JSON Schemas per message kind. A platform admin can publish a new pack with `POST /task-types/packs`; published versions are immutable. See [ADR 005](docs/adr/005-a2a-with-pistiva-trust-and-task-contracts.md).
+Two packs are bundled: `procurement` (quote, order, delivery) and `invoicing` (`invoice.submit`, `payment.status`). `GET /task-types` lists the contracts. `GET /task-types/{name}/versions/{v}` returns one, with self-contained JSON Schemas per message kind. A platform admin can publish a new pack with `POST /task-types/packs`; published versions are immutable. See [ADR 005](docs/adr/005-a2a-with-pistiva-trust-and-task-contracts.md).

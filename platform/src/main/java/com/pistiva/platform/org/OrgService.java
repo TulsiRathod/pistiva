@@ -6,6 +6,7 @@ import com.pistiva.platform.common.Ed25519;
 import com.pistiva.platform.identity.TokenService;
 import com.pistiva.platform.org.OrgMember.Role;
 import com.pistiva.platform.policy.PolicyService;
+import com.pistiva.platform.security.LoginThrottle;
 import com.pistiva.platform.security.Principals.UserPrincipal;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -21,6 +22,8 @@ import java.util.regex.Pattern;
 @Service
 public class OrgService {
 
+    private final LoginThrottle throttle;
+
     private static final Pattern DOMAIN = Pattern.compile("^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$");
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -35,7 +38,8 @@ public class OrgService {
 
     public OrgService(OrganizationRepository orgs, UserRepository users, OrgMemberRepository members,
                       PasswordEncoder passwordEncoder, TokenService tokens, PolicyService policies,
-                      DnsVerifier dns, AuditService audit) {
+                      DnsVerifier dns, AuditService audit, LoginThrottle throttle) {
+        this.throttle = throttle;
         this.orgs = orgs;
         this.users = users;
         this.members = members;
@@ -69,9 +73,16 @@ public class OrgService {
     }
 
     public String login(String email, String password) {
-        User user = users.findByEmail(email.trim().toLowerCase())
+        String key = email.trim().toLowerCase();
+        throttle.check(key);
+        User user = users.findByEmail(key)
                 .filter(u -> passwordEncoder.matches(password, u.getPasswordHash()))
-                .orElseThrow(() -> new ApiException.Unauthorized("Invalid email or password"));
+                .orElse(null);
+        if (user == null) {
+            throttle.failed(key);
+            throw new ApiException.Unauthorized("Invalid email or password");
+        }
+        throttle.succeeded(key);
         return tokens.issueUserToken(user);
     }
 

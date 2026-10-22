@@ -6,7 +6,9 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.context.request.async.DeferredResult;
 
 import java.util.List;
 import java.util.UUID;
@@ -37,14 +39,25 @@ public class P2PController {
         return p2p.offer(Principals.agent(), req.providerAgentId(), req.offer(), req.signature());
     }
 
+    /** With {@code waitSeconds}, holds the request until an offer arrives (or the wait ends with an empty list). */
     @GetMapping("/p2p/sessions/pending")
-    public List<P2PService.Session> pending() {
-        return p2p.pending(Principals.agent());
+    public DeferredResult<List<P2PService.Session>> pending(@RequestParam(defaultValue = "0") int waitSeconds) {
+        var provider = Principals.agent();
+        return p2p.waitFor(provider.agentId(), waitSeconds, () -> {
+            var found = p2p.pending(provider);
+            return found.isEmpty() ? null : found;
+        }, List::of);
     }
 
+    /** With {@code waitSeconds}, holds the request until the provider has answered. */
     @GetMapping("/p2p/sessions/{id}")
-    public P2PService.Session get(@PathVariable UUID id) {
-        return p2p.get(Principals.agent(), id);
+    public DeferredResult<P2PService.Session> get(@PathVariable UUID id, @RequestParam(defaultValue = "0") int waitSeconds) {
+        var caller = Principals.agent();
+        p2p.get(caller, id); // fail fast with 404 for a stranger
+        return p2p.waitFor(caller.agentId(), waitSeconds, () -> {
+            var s = p2p.get(caller, id);
+            return s.answer() == null ? null : s;
+        }, () -> p2p.get(caller, id));
     }
 
     @PostMapping("/p2p/sessions/{id}/answer")

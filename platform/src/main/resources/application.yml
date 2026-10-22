@@ -67,6 +67,8 @@ pistiva:
     # When true, discovery hides uncertified agents and grants to them are refused (certifiers excepted).
     required: ${PISTIVA_CERTIFICATION_REQUIRED:false}
     validity: 365d
+    # Grants the platform must have issued to the agent since the suite started, or the report is refused.
+    min-probe-grants: 5
   p2p:
     # WebRTC between agents: STUN for NAT discovery, TURN (coturn with use-auth-secret) as the relay fallback.
     stun-urls: ${PISTIVA_STUN_URLS:}

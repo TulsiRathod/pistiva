@@ -37,9 +37,13 @@ public class WebhookDispatcher {
     private final PlatformMetrics metrics;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).followRedirects(HttpClient.Redirect.NEVER).build();
 
-    public WebhookDispatcher(JdbcTemplate jdbc, PlatformMetrics metrics) {
+    private final boolean allowPrivate;
+
+    public WebhookDispatcher(JdbcTemplate jdbc, PlatformMetrics metrics,
+                             @org.springframework.beans.factory.annotation.Value("${pistiva.webhooks.allow-http:false}") boolean allowPrivate) {
         this.jdbc = jdbc;
         this.metrics = metrics;
+        this.allowPrivate = allowPrivate;
     }
 
     @Scheduled(fixedDelayString = "${pistiva.webhooks.dispatch-interval:5s}", initialDelayString = "${pistiva.webhooks.dispatch-interval:5s}")
@@ -73,6 +77,12 @@ public class WebhookDispatcher {
         Integer status = null;
         String error = null;
         try {
+            if (!allowPrivate) {
+                String problem = UrlGuard.problem(URI.create(url));
+                if (problem != null) {
+                    throw new IllegalStateException(problem);
+                }
+            }
             HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                     .timeout(Duration.ofSeconds(10))
                     .header("Content-Type", "application/json")
