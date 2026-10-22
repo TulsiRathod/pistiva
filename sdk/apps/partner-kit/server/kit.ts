@@ -16,6 +16,7 @@ import { buildConnector, McpInventory } from "./connectors.ts";
 import { migrate, type Db } from "./db.ts";
 import { buildCapabilities, disclosureKey } from "./modules.ts";
 import { OutboundService, summarize, type OutboundRequest } from "./outbound.ts";
+import { PeerListener, PeerTransport } from "@pistiva/p2p";
 import { KitMetrics } from "./metrics.ts";
 import { KitRepo, PgAuditSink, PgDraftStore, PgNonceStore, PgTaskStore, type Direction } from "./repo.ts";
 
@@ -94,7 +95,8 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
 
   const jobs = new JobQueue(db);
   const metrics = new KitMetrics(new Set([...Object.keys(cfg.provides), ...cfg.requests]), { jobs, repo });
-  const outbound = new OutboundService({ platform, keys: deps.keys, repo, jobs, metrics, suggest: (input) => ai.suggest(input) });
+  const peerTransport = cfg.p2p?.enabled ? new PeerTransport({ platform, keys: deps.keys, forceRelay: cfg.p2p.forceRelay }) : undefined;
+  const outbound = new OutboundService({ platform, keys: deps.keys, repo, jobs, metrics, transport: peerTransport, suggest: (input) => ai.suggest(input) });
   const commitments = new CommitmentService({ db, repo, outbound, platform });
   jobs.register("approvals.poll", () => commitments.poll());
   jobs.every("approvals.poll", deps.approvalPollMs ?? 5000);
@@ -127,6 +129,12 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
     return reply.header("Content-Type", metrics.registry.contentType).send(await metrics.registry.metrics());
   });
 
+  // Providers answer WebRTC offers through the same gateway, so every check applies to them too.
+  const peerListener = cfg.p2p?.enabled
+    ? new PeerListener({ platform, keys: deps.keys, app, forceRelay: cfg.p2p.forceRelay, onError: (e) => app.log.warn({ err: e }, "p2p") })
+    : undefined;
+  peerListener?.start();
+
   registerOperatorApi(app, { repo, outbound, commitments, ai, jobs, cfg, contracts, disclosure, connectors, versionOf, auth: new OperatorAuth(deps.adminPassword, deps.sessionSecret), deps });
 
   const webDir = deps.webDir ?? DEFAULT_WEB_DIR;
@@ -146,6 +154,8 @@ export async function createKit(deps: KitDeps): Promise<Kit> {
     metrics,
     async close() {
       jobs.stop();
+      await peerListener?.stop();
+      await peerTransport?.close();
       await outbound.idle();
       await app.close();
       await Promise.all(Object.values(connectors).map((c) => (c instanceof McpInventory ? c.close() : undefined)));

@@ -75,6 +75,7 @@ provides:
   quote.request: { module: inventory-quote, connector: inventory }
   order.draft: { module: order-draft }
 requests: []
+p2p: { enabled: true }
 `,
     `node_supplier_${boot.run}`,
     `${boot.keyDir}/supplier.yaml`,
@@ -87,6 +88,7 @@ connectors: {}
 provides: {}
 requests: [quote.request, order.draft]
 outbound: { currency: INR, defaultBudget: "5000.00" }
+p2p: { enabled: true }
 `,
     `node_buyer_${boot.run}`,
     `${boot.keyDir}/buyer.yaml`,
@@ -128,8 +130,13 @@ outbound: { currency: INR, defaultBudget: "5000.00" }
     const [task] = await ui<{ id: string; state: string; rounds: number; summary: string; approvalRequired: boolean }[]>(BUYER_PORT, "/ui/tasks?direction=outbound", token);
     check("quote completed after the answer", task?.state === "completed" && task.rounds === 2, task?.summary);
     check("approval flag carried from the platform grant", task?.approvalRequired === true);
-    const detail = await ui<{ receipts: { countersigned: boolean; recorded: boolean }[] }>(BUYER_PORT, `/ui/tasks/${task!.id}`, token);
+    const detail = await ui<{ receipts: { countersigned: boolean; recorded: boolean; signed: { receipt: { connection?: string } } }[] }>(BUYER_PORT, `/ui/tasks/${task!.id}`, token);
     check("both rounds countersigned and recorded on the platform", detail.receipts.length === 2 && detail.receipts.every((r) => r.countersigned && r.recorded));
+    check(
+      "rounds travelled over a direct WebRTC connection, signed into the receipts",
+      detail.receipts.every((r) => r.signed.receipt.connection === "direct"),
+      detail.receipts.map((r) => r.signed.receipt.connection ?? "https").join(", "),
+    );
 
     const sToken = (await ui<{ token: string }>(SUPPLIER_PORT, "/ui/login", "", { password: OPERATOR_PASSWORD })).token;
     const [inbound] = await ui<{ id: string; state: string }[]>(SUPPLIER_PORT, "/ui/tasks?direction=inbound", sToken);

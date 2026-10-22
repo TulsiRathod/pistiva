@@ -1,0 +1,15 @@
+{
+  "name": "@pistiva/p2p",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Peer-to-peer A2A over WebRTC data channels, with TURN relay fallback; the platform only signals",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@pistiva/agent-sdk": "*",
+    "@pistiva/gateway": "*",
+    "werift": "0.25.0"
+  }
+}

@@ -10,6 +10,8 @@ import {
   type AgentCard,
   type AgentStatus,
   type Certification,
+  type IceServerConfig,
+  type P2PSession,
   type DiscoveredAgent,
   type IssuedGrant,
   type SignedReceipt,
@@ -75,6 +77,27 @@ export class PlatformClient implements PlatformLookup {
     const query = `capability=${encodeURIComponent(capability)}${opts.certifiedOnly ? "&certifiedOnly=true" : ""}`;
     const found = await this.call<DiscoveredAgent[]>("GET", `/discovery?${query}`);
     return found.filter(verifyDiscoveredCard);
+  }
+
+  /** STUN/TURN servers for a WebRTC connection; TURN credentials expire after `ttlSeconds`. */
+  async iceServers(): Promise<IceServerConfig[]> {
+    return (await this.call<{ iceServers: IceServerConfig[] }>("GET", "/p2p/ice-servers")).iceServers;
+  }
+
+  async createP2PSession(providerAgentId: string, offer: string, signature: string): Promise<P2PSession> {
+    return this.call<P2PSession>("POST", "/p2p/sessions", { providerAgentId, offer, signature });
+  }
+
+  async pendingP2PSessions(): Promise<P2PSession[]> {
+    return this.call<P2PSession[]>("GET", "/p2p/sessions/pending");
+  }
+
+  async p2pSession(id: string): Promise<P2PSession> {
+    return this.call<P2PSession>("GET", `/p2p/sessions/${id}`);
+  }
+
+  async answerP2PSession(id: string, answer: string, signature: string): Promise<P2PSession> {
+    return this.call<P2PSession>("POST", `/p2p/sessions/${id}/answer`, { answer, signature });
   }
 
   /** The latest conformance result per task-type version for an agent. */

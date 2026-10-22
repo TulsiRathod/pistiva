@@ -12,6 +12,7 @@ import {
   type DiscoveredAgent,
   type OutboundRound,
   type PlatformClient,
+  type RpcTransport,
 } from "@pistiva/agent-sdk";
 import type { Suggestion } from "@pistiva/llm";
 import type { JobQueue } from "./jobs.ts";
@@ -73,6 +74,8 @@ export class OutboundService {
       repo: KitRepo;
       jobs: JobQueue;
       metrics?: KitMetrics;
+      /** Reaches providers over WebRTC before falling back to HTTPS. */
+      transport?: RpcTransport;
       /** Drafts an answer for the operator; never sent without them. */
       suggest?: (input: { request: Record<string, unknown>; question: string; options?: string[] }) => Promise<Suggestion | undefined>;
     },
@@ -90,6 +93,7 @@ export class OutboundService {
       platform: this.deps.platform,
       keys: this.deps.keys,
       contracts: this.contracts,
+      transport: this.deps.transport,
       onGrant: async (grant, provider) => {
         granted(grant.taskId);
         this.active.add(grant.taskId);
@@ -224,7 +228,7 @@ export class OutboundService {
   private async recoverStalled(): Promise<void> {
     for (const { task, provider } of await this.deps.repo.stalledOutbound(RECOVER_AFTER_MS)) {
       if (this.active.has(task.id) || !provider) continue;
-      const remote = await new A2AClient({ platform: this.deps.platform, keys: this.deps.keys }).getTask(provider, task.id).catch(() => undefined);
+      const remote = await new A2AClient({ platform: this.deps.platform, keys: this.deps.keys, transport: this.deps.transport }).getTask(provider, task.id).catch(() => undefined);
       const state = remote?.status.state;
       if (state && (TERMINAL_STATES as readonly string[]).includes(state)) {
         const data = singleDataPart(remote.status.message?.parts);
@@ -244,7 +248,7 @@ export class OutboundService {
   }
 
   private async cancelAtProvider(provider: DiscoveredAgent, taskId: string, reason: string): Promise<void> {
-    await new A2AClient({ platform: this.deps.platform, keys: this.deps.keys }).cancel(provider, taskId).catch(() => undefined);
+    await new A2AClient({ platform: this.deps.platform, keys: this.deps.keys, transport: this.deps.transport }).cancel(provider, taskId).catch(() => undefined);
     const task = await this.deps.repo.getTask(taskId);
     if (task) await this.deps.repo.upsertTask({ ...task, state: "canceled", summary: reason });
   }

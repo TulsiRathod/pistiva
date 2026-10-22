@@ -17,6 +17,7 @@
     "@pistiva/agent-sdk": "*",
     "@pistiva/gateway": "*",
     "@pistiva/llm": "*",
+    "@pistiva/p2p": "*",
     "@pistiva/procurement": "*",
     "pg": "^8.23.1",
     "prom-client": "^15.1.3",

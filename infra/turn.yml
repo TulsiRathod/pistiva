@@ -1,0 +1,33 @@
+# A TURN relay for peer-to-peer connections, layered over docker-compose.yml:
+#   docker compose -f infra/docker-compose.yml -f infra/turn.yml up --build
+# Agents connect directly when they can and through this relay when they cannot. The relay only
+# forwards DTLS-encrypted traffic. The platform issues each agent short-lived credentials
+# derived from PISTIVA_TURN_SECRET (coturn's use-auth-secret scheme).
+# In production run coturn on a public host with its real IP in --external-ip, and enable TLS.
+services:
+  platform:
+    environment:
+      PISTIVA_STUN_URLS: stun:localhost:3478
+      PISTIVA_TURN_URLS: turn:localhost:3478?transport=udp
+      PISTIVA_TURN_SECRET: ${PISTIVA_TURN_SECRET:-local-turn-secret}
+
+  coturn:
+    image: coturn/coturn:4.6.2
+    command:
+      - -n
+      - --log-file=stdout
+      - --min-port=49160
+      - --max-port=49200
+      - --external-ip=127.0.0.1
+      - --realm=pistiva
+      - --use-auth-secret
+      - --static-auth-secret=${PISTIVA_TURN_SECRET:-local-turn-secret}
+      - --fingerprint
+      - --no-tls
+      - --no-dtls
+      - --no-cli
+      # Local development only: lets relays reach peers on 127.0.0.1. Remove in production.
+      - --allow-loopback-peers
+    ports:
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"

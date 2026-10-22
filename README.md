@@ -163,12 +163,21 @@ PISTIVA_SIGNING_PROVIDER=vault-transit VAULT_ADDR=https://vault:8200 VAULT_TOKEN
 
 Rotating the key with `vault write -f transit/keys/pistiva-platform/rotate` switches new signatures to the new version. Every version stays in `/.well-known/jwks.json`, so outstanding grants keep verifying.
 
+## Peer-to-peer connections
+
+Nodes can talk to each other directly over WebRTC data channels instead of through public HTTPS endpoints, falling back to a TURN relay when a direct path is blocked, and to plain HTTPS when neither works. See [ADR 012](docs/adr/012-peer-to-peer-connections.md). The platform only relays signed offers and answers; the traffic is end-to-end encrypted, even through the relay.
+
+```yaml
+# agents.yaml
+p2p: { enabled: true }          # forceRelay: true sends everything through TURN
+```
+
+```bash
+docker compose -f infra/docker-compose.yml -f infra/turn.yml up --build   # adds coturn and points the platform at it
+```
+
+Each task reports whether it ran `direct` or `relayed`. The provider signs this into its receipts, and it appears in node metrics and usage records. Platform settings: `PISTIVA_STUN_URLS`, `PISTIVA_TURN_URLS`, `PISTIVA_TURN_SECRET`.
+
 ## Task-type contracts
 
 `GET /task-types` lists the contracts. `GET /task-types/{name}/versions/{v}` returns one, with self-contained JSON Schemas per message kind. A platform admin can publish a new pack with `POST /task-types/packs`; published versions are immutable. See [ADR 005](docs/adr/005-a2a-with-pistiva-trust-and-task-contracts.md).
-
-## Not in this milestone
-
-- WebRTC direct connections with TURN relay fallback
-
-See the plan's "Next milestone".

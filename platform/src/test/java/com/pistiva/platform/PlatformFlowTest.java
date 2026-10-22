@@ -42,7 +42,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "pistiva.webhooks.allow-http=true",
         "pistiva.webhooks.dispatch-interval=1h",
         "pistiva.tasks.sweep-interval=1h",
-        "pistiva.metrics.token=test-metrics-token"})
+        "pistiva.metrics.token=test-metrics-token",
+        "pistiva.p2p.stun-urls=stun:stun.example.com:3478",
+        "pistiva.p2p.turn-urls=turn:turn.example.com:3478?transport=udp",
+        "pistiva.p2p.turn-secret=test-turn-secret"})
 @AutoConfigureMockMvc
 @org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability
 @Testcontainers(disabledWithoutDocker = true)
@@ -537,6 +540,48 @@ class PlatformFlowTest {
         assertThat(csv).contains(supplier.orgId() + ",\"Org ").contains(",INR,1,0,10.00,1.00,9.00,\"NEFT-2026-10-0042\"");
         mvc.perform(get("/admin/payouts").param("period", "October").header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void signalingRelaysSignedOffersBetweenTheTwoAgentsOnlyAndIssuesShortLivedTurnCredentials() throws Exception {
+        TestAgent supplier = newAgent(true, "quote.request");
+        TestAgent buyer = newAgent(true, null);
+        TestAgent stranger = newAgent(true, null);
+
+        JsonNode ice = body(mvc.perform(get("/p2p/ice-servers").header("Authorization", "Bearer " + assertion(buyer))).andExpect(status().isOk()));
+        JsonNode turn = ice.get("iceServers").get(1);
+        String username = turn.get("username").asText();
+        assertThat(username).endsWith(":" + buyer.agentId());
+        assertThat(Long.parseLong(username.split(":")[0])).isGreaterThan(Instant.now().getEpochSecond());
+        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA1");
+        mac.init(new javax.crypto.spec.SecretKeySpec("test-turn-secret".getBytes(), "HmacSHA1"));
+        assertThat(turn.get("credential").asText()).isEqualTo(java.util.Base64.getEncoder().encodeToString(mac.doFinal(username.getBytes())));
+        mvc.perform(get("/p2p/ice-servers").header("Authorization", "Bearer " + buyer.userToken())).andExpect(status().isForbidden());
+
+        JsonNode session = body(mvc.perform(post("/p2p/sessions").header("Authorization", "Bearer " + assertion(buyer))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("providerAgentId", supplier.agentId().toString()).put("offer", "v=0 offer").put("signature", "sig-o"))))
+                .andExpect(status().isOk()));
+        String id = session.get("id").asText();
+        JsonNode pending = body(mvc.perform(get("/p2p/sessions/pending").header("Authorization", "Bearer " + assertion(supplier))));
+        assertThat(pending.findValuesAsText("id")).contains(id);
+        assertThat(body(mvc.perform(get("/p2p/sessions/pending").header("Authorization", "Bearer " + assertion(stranger)))).findValuesAsText("id")).doesNotContain(id);
+
+        String answer = json(mapper.createObjectNode().put("answer", "v=0 answer").put("signature", "sig-a"));
+        mvc.perform(post("/p2p/sessions/" + id + "/answer").header("Authorization", "Bearer " + assertion(buyer))
+                .contentType(MediaType.APPLICATION_JSON).content(answer)).andExpect(status().isNotFound());
+        mvc.perform(post("/p2p/sessions/" + id + "/answer").header("Authorization", "Bearer " + assertion(supplier))
+                .contentType(MediaType.APPLICATION_JSON).content(answer)).andExpect(status().isOk());
+        mvc.perform(post("/p2p/sessions/" + id + "/answer").header("Authorization", "Bearer " + assertion(supplier))
+                .contentType(MediaType.APPLICATION_JSON).content(answer)).andExpect(status().isNotFound());
+        mvc.perform(get("/p2p/sessions/" + id).header("Authorization", "Bearer " + assertion(buyer)))
+                .andExpect(jsonPath("$.answer").value("v=0 answer")).andExpect(jsonPath("$.answerSignature").value("sig-a"));
+        mvc.perform(get("/p2p/sessions/" + id).header("Authorization", "Bearer " + assertion(stranger))).andExpect(status().isNotFound());
+
+        TestAgent unverified = newAgent(false, "quote.request");
+        mvc.perform(post("/p2p/sessions").header("Authorization", "Bearer " + assertion(buyer)).contentType(MediaType.APPLICATION_JSON)
+                .content(json(mapper.createObjectNode().put("providerAgentId", unverified.agentId().toString()).put("offer", "v=0").put("signature", "s"))))
+                .andExpect(status().isForbidden());
     }
 
     private ResultActions submitCertification(TestAgent certifier, TestAgent target, boolean allPass) throws Exception {

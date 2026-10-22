@@ -67,3 +67,8 @@ pistiva:
     # When true, discovery hides uncertified agents and grants to them are refused (certifiers excepted).
     required: ${PISTIVA_CERTIFICATION_REQUIRED:false}
     validity: 365d
+  p2p:
+    # WebRTC between agents: STUN for NAT discovery, TURN (coturn with use-auth-secret) as the relay fallback.
+    stun-urls: ${PISTIVA_STUN_URLS:}
+    turn-urls: ${PISTIVA_TURN_URLS:}
+    turn-secret: ${PISTIVA_TURN_SECRET:}

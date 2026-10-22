@@ -69,6 +69,25 @@ export interface Certification {
   revokedReason: string | null;
 }
 
+/** ICE servers a WebRTC connection should use; TURN credentials are short-lived and bound to one agent. */
+export interface IceServerConfig {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
+/** A WebRTC signaling session between a requester and a provider, relayed by the platform. */
+export interface P2PSession {
+  id: string;
+  requesterAgentId: string;
+  providerAgentId: string;
+  offer: string;
+  offerSignature: string;
+  answer: string | null;
+  answerSignature: string | null;
+  expiresAt: string;
+}
+
 export interface AgentKeyView {
   kid: string;
   publicKey: string;
@@ -163,7 +182,12 @@ export interface Receipt {
   requestHash: string;
   responseHash: string;
   issuedAt: number;
+  /** How the request reached the provider; absent for plain HTTPS, which counts as direct. */
+  connection?: ConnectionKind;
 }
+
+/** "relayed" means the traffic went through a TURN server; HTTPS and peer-to-peer WebRTC are "direct". */
+export type ConnectionKind = "direct" | "relayed";
 
 export interface SignedReceipt {
   receipt: Receipt;

@@ -21,6 +21,7 @@ import type { AgentKeyPair } from "./keys.ts";
 import type { PlatformClient } from "./platform-client.ts";
 import {
   AGENT_ASSERTION_TYP,
+  type ConnectionKind,
   type DiscoveredAgent,
   type Envelope,
   type IssuedGrant,
@@ -62,8 +63,14 @@ export interface A2AOutcome<R> {
   rounds: RoundRecord[];
   grants: IssuedGrant[];
   approvalRequired: boolean;
-  /** Only direct HTTPS exists in this milestone; relay comes with P2P. */
-  connection: "direct";
+  /** "relayed" if any round went through a TURN server; HTTPS and peer-to-peer WebRTC are "direct". */
+  connection: ConnectionKind;
+}
+
+/** An alternative way to reach a provider, e.g. a WebRTC data channel. */
+export interface RpcTransport {
+  /** Sends one JSON-RPC request; resolves undefined when this transport cannot reach the provider (the client then uses HTTPS). */
+  send(provider: DiscoveredAgent, request: { body: string; authorization?: string }): Promise<{ text: string; connection: ConnectionKind } | undefined>;
 }
 
 export class A2AError extends Error {
@@ -87,6 +94,8 @@ export interface A2AClientOptions {
   grantRenewalSeconds?: number;
   /** Upper bound on clarification rounds, so a provider cannot keep a task open forever. */
   maxRounds?: number;
+  /** Tried before HTTPS for every request; HTTPS remains the fallback. */
+  transport?: RpcTransport;
   /** Called when the platform issues (or renews) the task's grant, before any message is sent. */
   onGrant?(grant: IssuedGrant, provider: DiscoveredAgent): Promise<void> | void;
   /** Called after each verified round, e.g. so an operator UI can show the exchange. */
@@ -174,6 +183,10 @@ export class A2AClient {
     const grants = [grant];
     const rounds: RoundRecord[] = [];
     const base: Omit<A2AOutcome<Res>, "state"> = { taskId: grant.taskId, rounds, grants, approvalRequired: grant.approvalRequired, connection: "direct" };
+    // One relayed round makes the whole task relayed; the base object is shared by every return below.
+    const noteConnection = (c: ConnectionKind) => {
+      if (c === "relayed") base.connection = "relayed";
+    };
 
     let kind: MessageKind = startKind;
     let data: Record<string, unknown> = startData;
@@ -183,7 +196,7 @@ export class A2AClient {
         grants.push(grant);
         await this.opts.onGrant?.(grant, provider);
       }
-      const task = await this.sendRound(provider, grant, capability, kind, round, data);
+      const task = await this.sendRound(provider, grant, capability, kind, round, data, noteConnection);
       const record = await this.settleReceipt(provider, task);
       rounds.push(record);
       await this.opts.onRound?.({ taskId: grant.taskId, grant, round, kind, sent: data, task, record });
@@ -233,6 +246,7 @@ export class A2AClient {
     kind: MessageKind,
     round: number,
     data: Record<string, unknown>,
+    onConnection: (c: ConnectionKind) => void,
   ): Promise<A2ATask> {
     const { platform, keys } = this.opts;
     const parts: Part[] = [dataPart(data, kind)];
@@ -257,7 +271,7 @@ export class A2AClient {
         metadata: { [PISTIVA_TRUST]: { header: envelope.header, signature: envelope.signature } satisfies MessageTrust },
       };
       try {
-        const task = await this.rpc<A2ATask>(provider, "message/send", { message });
+        const task = await this.rpc<A2ATask>(provider, "message/send", { message }, undefined, onConnection);
         await this.verifyReply(provider, grant, round, sent, task);
         return task;
       } catch (e) {
@@ -321,19 +335,31 @@ export class A2AClient {
     return signJws(AGENT_ASSERTION_TYP, platform.kid, { iss: platform.agentId, aud: provider.agentId, iat: now, exp: now + 60, jti: randomUUID() }, keys);
   }
 
-  private async rpc<T>(provider: DiscoveredAgent, method: string, params: unknown, bearer?: string): Promise<T> {
-    const res = await fetch(provider.card.endpoint.replace(/\/$/, "") + A2A_PATH, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-A2A-Extensions": PISTIVA_TRUST_EXTENSION,
-        ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params }),
-      signal: AbortSignal.timeout(this.opts.timeoutMs ?? 10_000),
-    });
-    if (res.status >= 500) throw new Error(`Provider returned HTTP ${res.status}`);
-    const body = (await res.json()) as JsonRpcResponse<T>;
+  private async rpc<T>(provider: DiscoveredAgent, method: string, params: unknown, bearer?: string, onConnection?: (c: ConnectionKind) => void): Promise<T> {
+    const payload = JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params });
+    let body: JsonRpcResponse<T> | undefined;
+    if (this.opts.transport) {
+      // A transport that fails to deliver must not fail the task: the same request goes out over HTTPS.
+      const sent = await this.opts.transport.send(provider, { body: payload, authorization: bearer ? `Bearer ${bearer}` : undefined }).catch(() => undefined);
+      if (sent) {
+        body = JSON.parse(sent.text) as JsonRpcResponse<T>;
+        onConnection?.(sent.connection);
+      }
+    }
+    if (!body) {
+      const res = await fetch(provider.card.endpoint.replace(/\/$/, "") + A2A_PATH, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-A2A-Extensions": PISTIVA_TRUST_EXTENSION,
+          ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+        },
+        body: payload,
+        signal: AbortSignal.timeout(this.opts.timeoutMs ?? 10_000),
+      });
+      if (res.status >= 500) throw new Error(`Provider returned HTTP ${res.status}`);
+      body = (await res.json()) as JsonRpcResponse<T>;
+    }
     if ("error" in body) {
       const err: JsonRpcError = body.error;
       throw new A2AError(err.code, err.message, err.data);

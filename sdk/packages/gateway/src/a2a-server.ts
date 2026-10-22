@@ -20,6 +20,7 @@ import {
   VerificationError,
   verifyJws,
   type A2AAgentCard,
+  type ConnectionKind,
   type A2AMessage,
   type A2ATask,
   type JsonRpcError,
@@ -35,6 +36,14 @@ import { TaskRejection, type GatewayCore, type HandlerOutcome, type TaskContext 
 import type { StoredTask } from "./stores.ts";
 import { SpanStatusCode, type Span } from "@opentelemetry/api";
 import { annotate, inSpan, SpanAttr } from "./telemetry.ts";
+import { currentConnection, withConnection } from "./transport-context.ts";
+
+declare module "fastify" {
+  interface FastifyInstance {
+    /** Runs one A2A JSON-RPC request in-process; used by transports other than HTTPS. */
+    handleRpc(body: unknown, authorization: string | undefined, connection?: ConnectionKind): Promise<unknown>;
+  }
+}
 
 class RpcFailure extends Error {
   constructor(
@@ -80,14 +89,21 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
     return agentCard();
   });
 
-  app.post(A2A_PATH, async (req) => {
-    const rpc = req.body as JsonRpcRequest<Record<string, unknown>>;
+  /**
+   * The JSON-RPC entry point, shared by the HTTPS route and in-process transports such as the WebRTC
+   * listener. The latter pass the connection kind directly: it cannot be claimed by a remote HTTPS caller.
+   */
+  async function handleRpc(body: unknown, authorization: string | undefined, connection?: ConnectionKind) {
+    const rpc = body as JsonRpcRequest<Record<string, unknown>>;
     const id = rpc && typeof rpc === "object" && "id" in rpc ? rpc.id : null;
     if (!rpc || rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
       return { jsonrpc: "2.0", id, error: { code: RpcErrors.invalidRequest, message: "Not a JSON-RPC 2.0 request" } };
     }
-    return inSpan(`pistiva.a2a ${rpc.method}`, { [SpanAttr.rpcMethod]: rpc.method }, (span) => dispatch(rpc, id, req.headers.authorization, span));
-  });
+    const run = () => inSpan(`pistiva.a2a ${rpc.method}`, { [SpanAttr.rpcMethod]: rpc.method }, (span) => dispatch(rpc, id, authorization, span));
+    return connection ? withConnection(connection, run) : run();
+  }
+  app.decorate("handleRpc", handleRpc);
+  app.post(A2A_PATH, async (req) => handleRpc(req.body, req.headers.authorization));
 
   async function dispatch(
     rpc: JsonRpcRequest<Record<string, unknown>>,
@@ -223,6 +239,7 @@ export function registerA2ARoutes(app: FastifyInstance, core: GatewayCore): void
       requestHash: requestHash(envelope),
       responseHash: responseHash(body),
       issuedAt: Math.floor(Date.now() / 1000),
+      ...(currentConnection() ? { connection: currentConnection() } : {}),
     };
     const trust: TaskTrust = {
       header: response.header,

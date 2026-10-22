@@ -33,6 +33,11 @@ export interface KitConfig {
   outbound?: { currency?: string; defaultBudget?: string };
   /** Optional AI layer: language model, answer preferences, catalog search, spec checks. */
   ai?: AiConfig;
+  /**
+   * Peer-to-peer connections over WebRTC, with a TURN relay as fallback (the platform supplies the
+   * servers). Off by default; requests still go over HTTPS when a peer cannot be reached.
+   */
+  p2p?: { enabled?: boolean; forceRelay?: boolean };
 }
 
 export interface KitEnv {
@@ -93,5 +98,6 @@ export async function loadConfig(path: string): Promise<KitConfig> {
     requests: raw.requests ?? [],
     outbound: raw.outbound,
     ai: raw.ai,
+    p2p: raw.p2p,
   };
 }
