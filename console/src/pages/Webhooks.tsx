@@ -74,7 +74,7 @@ export function Webhooks({ api, orgId, role }: { api: Api; orgId: string; role: 
           <form onSubmit={submit} className="stack">
             <h3>Add a webhook</h3>
             <input required type="url" placeholder="https://example.com/pistiva-events" value={url} onChange={(e) => setUrl(e.target.value)} />
-            <fieldset className="stack">
+            <fieldset className="events">
               <legend className="muted">Events</legend>
               {(types.data ?? ["*"]).map((t) => (
                 <label key={t} className="row">
