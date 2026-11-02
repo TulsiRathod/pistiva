@@ -1,3 +1,5 @@
+import { LogoMark, LogoSprite } from "./components/Logo.tsx";
+import { ThemeToggle } from "./components/Theme.tsx";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { NodeApi, type NodeInfo } from "./api.ts";
 import { Activity } from "./pages/Activity.tsx";
@@ -67,6 +69,7 @@ export function App() {
   const [, title] = NAV.find(([id]) => id === tab)!;
   return (
     <div className="app">
+      <LogoSprite />
       <aside className="sidebar">
         <div className="brand">
           <LogoMark /> Pistiva <span className="chip">node</span>
@@ -91,7 +94,8 @@ export function App() {
             <strong>Operator</strong>
             <span className="muted">this node only</span>
           </div>
-          <button className="icon-btn" onClick={signOut} title="Sign out" aria-label="Sign out">
+          <ThemeToggle className="icon-btn" />
+          <button className="icon-btn" onClick={signOut} title="Sign out" aria-label="Sign out" style={{ marginLeft: 0 }}>
             <svg {...ic}>
               <path d="M15 4h3a2 2 0 012 2v12a2 2 0 01-2 2h-3M10 17l5-5-5-5M15 12H4" />
             </svg>
@@ -134,6 +138,7 @@ function Login({ api, onToken }: { api: NodeApi; onToken: (t: string) => void })
   }
   return (
     <main className="center node-login">
+      <LogoSprite />
       <form className="modal" onSubmit={submit}>
         <div className="brand">
           <LogoMark /> Pistiva <span className="chip">node</span>
@@ -153,24 +158,6 @@ function Login({ api, onToken }: { api: NodeApi; onToken: (t: string) => void })
   );
 }
 
-export function LogoMark({ size = 24 }: { size?: number }) {
-  return (
-    <svg className="logo" width={size * (275 / 297)} height={size} viewBox="0 0 275 297" aria-hidden>
-      <defs>
-        <linearGradient id="pv-top" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0" stopColor="#00C6FF" />
-          <stop offset="1" stopColor="#3EE6A8" />
-        </linearGradient>
-        <linearGradient id="pv-bottom" x1="0" y1="0" x2="0.4" y2="1">
-          <stop offset="0" stopColor="#0A2FC8" />
-          <stop offset="1" stopColor="#0B23AE" />
-        </linearGradient>
-      </defs>
-      <path fill="url(#pv-top)" d="M0 112C0 50 50 0 112 0H249Q275 0 275 26V40C275 87 231 131 174 131H72C32 131 0 163 0 200Z" />
-      <path fill="url(#pv-bottom)" d="M72 131H132V196C132 254 86 297 22 297Q0 297 0 279V200C0 162 32 131 72 131Z" />
-    </svg>
-  );
-}
 
 export function relative(iso: string): string {
   const s = Math.round((Date.now() - Date.parse(iso)) / 1000);

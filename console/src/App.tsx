@@ -4,7 +4,9 @@ import { Admin } from "./pages/Admin.tsx";
 import { Agents } from "./pages/Agents.tsx";
 import { Approvals } from "./pages/Approvals.tsx";
 import { Audit } from "./pages/Audit.tsx";
-import { Landing, LogoMark } from "./pages/Landing.tsx";
+import { LogoMark, LogoSprite } from "./components/Logo.tsx";
+import { ThemeToggle } from "./components/Theme.tsx";
+import { Landing } from "./pages/Landing.tsx";
 import { Login, type AuthMode } from "./pages/Login.tsx";
 import { Overview } from "./pages/Overview.tsx";
 import { PolicyPage } from "./pages/PolicyPage.tsx";
@@ -127,6 +129,7 @@ export function App() {
   if (!token) {
     return (
       <>
+        <LogoSprite />
         <Landing onAuth={setAuth} />
         {auth && <Login api={api} onToken={signIn} initialMode={auth} onClose={() => setAuth(null)} />}
       </>
@@ -140,6 +143,7 @@ export function App() {
 
   return (
     <div className="app">
+      <LogoSprite />
       <aside className="sidebar">
         <div className="brand">
           <LogoMark /> Pistiva
@@ -169,11 +173,14 @@ export function App() {
             <strong title={me.email}>{me.email}</strong>
             <span className="muted">{me.platformAdmin ? "Platform admin" : membership?.role.toLowerCase()}</span>
           </div>
-          <button className="icon-btn" onClick={signOut} title="Sign out" aria-label="Sign out">
-            <svg {...ic}>
-              <path d="M15 4h3a2 2 0 012 2v12a2 2 0 01-2 2h-3M10 17l5-5-5-5M15 12H4" />
-            </svg>
-          </button>
+          <div style={{ marginLeft: "auto", display: "flex" }}>
+            <ThemeToggle className="icon-btn" />
+            <button className="icon-btn" onClick={signOut} title="Sign out" aria-label="Sign out" style={{ marginLeft: 0 }}>
+              <svg {...ic}>
+                <path d="M15 4h3a2 2 0 012 2v12a2 2 0 01-2 2h-3M10 17l5-5-5-5M15 12H4" />
+              </svg>
+            </button>
+          </div>
         </div>
       </aside>
       <main className="content">
